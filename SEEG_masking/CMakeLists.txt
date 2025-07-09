@@ -1,27 +1,20 @@
-cmake_minimum_required(VERSION 3.16.3...3.19.7)
-
-project(SEEG)
+#-----------------------------------------------------------------------------
+set(MODULE_NAME SEEG_masking)
 
 #-----------------------------------------------------------------------------
-# Extension meta-information
-set(EXTENSION_HOMEPAGE "https://www.example.com/SEEG")
-set(EXTENSION_CATEGORY "Examples")
-set(EXTENSION_CONTRIBUTORS "Rocio Avalos (UPC.)")
-set(EXTENSION_DESCRIPTION "This extension provides tools for SEEG masking.")
-set(EXTENSION_ICONURL "SEEG_masking/Resources/Icons/icon.jpg")
-set(EXTENSION_SCREENSHOTURLS "https://www.example.com/SEEG_screenshot.png")
-set(EXTENSION_DEPENDS "NA") # Dependent extensions
+set(MODULE_PYTHON_SCRIPTS
+  ${MODULE_NAME}.py
+  )
+
+set(MODULE_PYTHON_RESOURCES
+  Resources/Icons/${MODULE_NAME}.png
+  Resources/UI/${MODULE_NAME}.ui
+  )
 
 #-----------------------------------------------------------------------------
-# Extension dependencies
-find_package(Slicer REQUIRED)
-include(${Slicer_USE_FILE})
-
-#-----------------------------------------------------------------------------
-# Extension modules
-add_subdirectory(SEEG_masking)
-## NEXT_MODULE
-
-#-----------------------------------------------------------------------------
-include(${Slicer_EXTENSION_GENERATE_CONFIG})
-include(${Slicer_EXTENSION_CPACK})
+slicerMacroBuildScriptedModule(
+  NAME ${MODULE_NAME}
+  SCRIPTS ${MODULE_PYTHON_SCRIPTS}
+  RESOURCES ${MODULE_PYTHON_RESOURCES}
+  WITH_GENERIC_TESTS
+  )
