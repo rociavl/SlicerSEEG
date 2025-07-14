@@ -6,7 +6,7 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>469</width>
+    <width>541</width>
     <height>772</height>
    </rect>
   </property>
@@ -54,14 +54,14 @@
         </property>
        </widget>
       </item>
-      <item row="1" column="0">
+      <item row="3" column="0">
        <widget class="QLabel" name="label_3">
         <property name="text">
          <string>Input volume (CTP)</string>
         </property>
        </widget>
       </item>
-      <item row="1" column="1">
+      <item row="3" column="1">
        <widget class="qMRMLNodeComboBox" name="inputSelectorCT">
         <property name="enabled">
          <bool>true</bool>
@@ -86,7 +86,7 @@
         </property>
        </widget>
       </item>
-      <item row="2" column="0" colspan="2">
+      <item row="4" column="0" colspan="2">
        <widget class="QPushButton" name="applyButton">
         <property name="enabled">
          <bool>true</bool>
@@ -97,12 +97,18 @@
         <property name="text">
          <string>✅ Apply Masking Norm (the electrodes are gonna be here)</string>
         </property>
+        <property name="checkable">
+         <bool>false</bool>
+        </property>
        </widget>
       </item>
-      <item row="3" column="0">
-       <widget class="QPushButton" name="saveButton">
+      <item row="1" column="1">
+       <widget class="QCheckBox" name="checkBox">
         <property name="text">
-         <string>Save mask</string>
+         <string>Input is already a binary brain mask</string>
+        </property>
+        <property name="checked">
+         <bool>false</bool>
         </property>
        </widget>
       </item>

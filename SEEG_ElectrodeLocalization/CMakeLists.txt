@@ -1,5 +1,5 @@
 #-----------------------------------------------------------------------------
-set(MODULE_NAME SEEG_masking)
+set(MODULE_NAME SEEG_ElectrodeLocalization)
 
 #-----------------------------------------------------------------------------
 set(MODULE_PYTHON_SCRIPTS

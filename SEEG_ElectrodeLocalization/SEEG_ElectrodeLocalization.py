@@ -497,17 +497,17 @@ def embedded_predict_electrode_confidence(feature_csv_path, model_path, patient_
 # SEEG_masking
 #
 
-class SEEG_masking(ScriptedLoadableModule):
+class SEEG_ElectrodeLocalization(ScriptedLoadableModule):
     """Uses ScriptedLoadableModule base class, available at:
     https://github.com/Slicer/Slicer/blob/main/Base/Python/slicer/ScriptedLoadableModule.py
     """
 
     def __init__(self, parent):
         ScriptedLoadableModule.__init__(self, parent)
-        self.parent.title = _("SEEG Masking")
-        self.parent.categories = [translate("qSlicerAbstractCoreModule", "Examples")]
+        self.parent.title = _("SEEG Electrode Localization")
+        self.parent.categories = ["Segmentation"]
         self.parent.dependencies = []
-        self.parent.contributors = ["Rocio Avalos (AnyWare Corp.)"]
+        self.parent.contributors = ["Rocio Avalos (UPC)"]
         self.parent.helpText = _("""
 This is an example of scripted loadable module bundled in an extension.
 See more information in <a href="https://github.com/organization/projectname#SEEG_masking">module documentation</a>.
@@ -565,7 +565,7 @@ class ConfidenceThresholdWidget:
         self.ui = ui_elements
         self.csv_path = None
         self.points = []
-        self.threshold = 0.5
+        self.threshold = 0.05
         self.markupNode = None
         self.setupConnections()
         
@@ -648,8 +648,9 @@ class ConfidenceThresholdWidget:
             # Set display properties
             displayNode = self.markupNode.GetDisplayNode()
             if displayNode:
-                displayNode.SetGlyphScale(2.5)  # Make points larger
-                displayNode.SetColor(1.0, 0.5, 0.0)  # Orange for medium confidence
+                displayNode.SetGlyphScale(2.5) 
+                displayNode.SetColor(1.0, 0.5, 0.0)  
+                displayNode.SetTextScale(0)  # Hide all text labels
         else:
             self.markupNode.RemoveAllControlPoints()
         
@@ -657,10 +658,7 @@ class ConfidenceThresholdWidget:
         visible_count = 0
         for x, y, z, confidence in self.points:
             if confidence >= self.threshold:
-                point_index = self.markupNode.AddFiducial(x, y, z)
-                # Set point label with confidence
-                label = f"E{visible_count+1} ({confidence:.3f})"
-                self.markupNode.SetNthFiducialLabel(point_index, label)
+                point_index = self.markupNode.AddControlPoint([x, y, z])
                 visible_count += 1
         
         # Update statistics
@@ -706,7 +704,7 @@ class ConfidenceThresholdWidget:
 # SEEG_maskingWidget - Pure Direct UI Access
 #
 
-class SEEG_maskingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
+class SEEG_ElectrodeLocalizationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     """Uses ScriptedLoadableModuleWidget base class with pure direct UI access."""
 
     def __init__(self, parent=None) -> None:
@@ -715,14 +713,15 @@ class SEEG_maskingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         VTKObservationMixin.__init__(self)
         self.logic = None
         self.outputVolumeNode = None  # Track the generated mask volume
-        self.confidenceWidget = None  # Confidence threshold widget
+        self.confidenceWidget = None # Confidence viewer widget
+
 
     def setup(self) -> None:
         """Called when the user opens the module the first time and the widget is initialized."""
         ScriptedLoadableModuleWidget.setup(self)
 
         # Load widget from .ui file
-        uiWidget = slicer.util.loadUI(self.resourcePath("UI/SEEG_masking.ui"))
+        uiWidget = slicer.util.loadUI(self.resourcePath("UI/SEEG_ElectrodeLocalization.ui"))
         self.layout.addWidget(uiWidget)
         self.ui = slicer.util.childWidgetVariables(uiWidget)
 
@@ -730,7 +729,7 @@ class SEEG_maskingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         uiWidget.setMRMLScene(slicer.mrmlScene)
 
         # Create logic class
-        self.logic = SEEG_maskingLogic()
+        self.logic = SEEG_ElectrodeLocalizationLogic()
 
         # Connect Qt Designer widgets
         self.ui.showPathButton.connect("clicked(bool)", self.onBrowseOutput)
@@ -742,8 +741,6 @@ class SEEG_maskingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         # Connect buttons
         self.ui.applyButton.connect("clicked(bool)", self.onApplyButton)
-        self.ui.saveButton.connect("clicked(bool)", self.onSaveButton)
-        self.ui.saveButton.setText("Save Additional Copy")
         
 
         # Connect volume selectors
@@ -918,14 +915,12 @@ class SEEG_maskingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
 
     def setupConfidenceViewer(self):
-        """Initialize the confidence viewer with UI elements from Qt Designer."""
         try:
-            # Create confidence viewer handler with UI elements
-            self.confidenceViewer = ConfidenceThresholdWidget(self.ui)
+            self.confidenceWidget = ConfidenceThresholdWidget(self.ui)  
             print("✅ Confidence viewer initialized successfully")
         except Exception as e:
             print(f"⚠️ Confidence viewer setup failed: {e}")
-            self.confidenceViewer = None
+            self.confidenceWidget = None
 
 
     def onApplyButton(self) -> None:
@@ -942,6 +937,8 @@ class SEEG_maskingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 input_volume_node = self.ui.inputSelector.currentNode()
             if hasattr(self.ui, 'inputSelectorCT'):
                 input_volume_node_CT = self.ui.inputSelectorCT.currentNode()
+            # CHECK IF BINARY MASK OPTION IS SELECTED
+            is_binary_mask = hasattr(self.ui, 'checkBox') and self.ui.checkBox.isChecked()
             
             # Validate inputs
             if not input_volume_node:
@@ -972,7 +969,21 @@ class SEEG_maskingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             
             # === GENERATE BRAIN MASK ===
             try:
-                self.outputVolumeNode = self.logic.process(input_volume_node)
+                if input_volume_node and is_binary_mask:
+                    # Use existing binary mask directly
+                    logging.info(f"Using existing binary mask: {input_volume_node.GetName()}")
+                    self.outputVolumeNode = input_volume_node  
+                    
+                elif input_volume_node:
+                    # Generate brain mask from MRI
+                    logging.info(f"Processing MRI volume: {input_volume_node.GetName()}")
+                    self.outputVolumeNode = self.logic.process(input_volume_node)
+                    
+                else:
+                    # No MRI provided - this is now required
+                    slicer.util.errorDisplay("Please select an MRI input volume for brain mask generation.")
+                    return
+                
                 if not self.outputVolumeNode:
                     slicer.util.errorDisplay("Failed to generate brain mask.")
                     return
@@ -1136,7 +1147,7 @@ class SEEG_maskingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 
                 # Define required file paths
                 brain_mask_file = os.path.join(brain_mask_dir, brain_mask_filename)
-                top_mask_file = os.path.join(global_masks_dir, f"top_mask_1_{input_volume_node_CT.GetName()}.nrrd")
+                top_mask_file = os.path.join(global_masks_dir, f"consensus_50pct_{input_volume_node_CT.GetName()}.nrrd")
                 
                 # Use the backup confidence CT file
                 if 'confidence_ct_backup' in locals() and confidence_ct_backup and os.path.exists(confidence_ct_backup):
@@ -1151,7 +1162,7 @@ class SEEG_maskingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 if not os.path.exists(brain_mask_file):
                     missing_files.append(f"Brain mask: {brain_mask_filename}")
                 if not os.path.exists(top_mask_file):
-                    missing_files.append(f"Top mask: top_mask_1_{input_volume_node_CT.GetName()}.nrrd")
+                    missing_files.append(f"Consensus mask: consensus_50pct_{input_volume_node_CT.GetName()}.nrrd")
                 if not confidence_ct_file or not os.path.exists(confidence_ct_file):
                     missing_files.append("Confidence CT file")
                 if not os.path.exists(CONFIDENCE_MODEL_PATH):
@@ -1184,11 +1195,11 @@ class SEEG_maskingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                         f"    • Average confidence: {results['avg_confidence']:.3f}"
                     )
 
-                    # ✅ AUTO-LOAD THE CONFIDENCE CSV INTO THE VIEWER (MOVED INSIDE THE else BLOCK)
+                    # ✅ AUTO-LOAD THE CONFIDENCE CSV 
                     if 'predictions_csv' in results:
                         predictions_csv_path = results['predictions_csv']
-                        if os.path.exists(predictions_csv_path) and self.confidenceViewer:
-                            self.confidenceViewer.loadCsvFile(predictions_csv_path)
+                        if os.path.exists(predictions_csv_path) and self.confidenceWidget:
+                            self.confidenceWidget.loadCsvFile(predictions_csv_path)
                             
                             # Expand the confidence viewer section
                             if hasattr(self.ui, 'confidenceCollapsibleButton'):
@@ -1230,54 +1241,11 @@ class SEEG_maskingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
 
 
-
-
-
-    def onSaveButton(self) -> None:
-        """Handle 'Save Mask' button click event."""
-        logging.info("Save button clicked!")
-
-        if not self.outputVolumeNode:
-            slicer.util.errorDisplay("No mask to save! Please click 'Apply' first to generate a brain mask.")
-            logging.error("No mask to save!")
-            return
-
-        logging.info(f"Saving mask: {self.outputVolumeNode.GetName()}")
-
-        # Create a file dialog
-        fileDialog = qt.QFileDialog()
-        fileDialog.setAcceptMode(qt.QFileDialog.AcceptSave)
-        fileDialog.setNameFilter("NRRD files (*.nrrd);;All files (*)")
-        fileDialog.setDefaultSuffix('nrrd')
-        fileDialog.setOption(qt.QFileDialog.ShowDirsOnly, False)
-        
-        # Set default filename
-        default_name = f"BrainMask_{self.outputVolumeNode.GetName()}.nrrd"
-        fileDialog.selectFile(default_name)
-
-        # Show file dialog and get selected file path
-        if fileDialog.exec_():
-            savePath = fileDialog.selectedFiles()[0]
-            logging.info(f"Selected save path: {savePath}")
-
-            try:
-                success = slicer.util.saveNode(self.outputVolumeNode, savePath)
-
-                if success:
-                    slicer.util.infoDisplay(f"Brain mask saved successfully to:\n{savePath}")
-                    logging.info(f"Mask saved successfully at: {savePath}")
-                else:
-                    slicer.util.errorDisplay("Failed to save mask. Please check the file path and permissions.")
-                    logging.error("Failed to save mask")
-            except Exception as e:
-                slicer.util.errorDisplay(f"Error saving mask: {str(e)}")
-                logging.error(f"Error saving mask: {str(e)}")
-
 #
-# SEEG_maskingLogic 
+# SEEG_ElectrodeLocalizationLogic
 #
 
-class SEEG_maskingLogic:
+class SEEG_ElectrodeLocalizationLogic:
     """This class implements all the actual computation done by your module."""
 
     def __init__(self, parent=None):
@@ -1309,10 +1277,10 @@ class SEEG_maskingLogic:
         return self.maskExtractor.extract_mask(inputVolume, threshold_value=20, show_result=showResult)
 
 #
-# SEEG_maskingTest
+# SEEG_ElectrodeLocalizationTest
 #
 
-class SEEG_maskingTest(ScriptedLoadableModuleTest):
+class SEEG_ElectrodeLocalizationTest(ScriptedLoadableModuleTest):
     """
     This is the test case for your scripted module.
     """
@@ -1337,7 +1305,7 @@ class SEEG_maskingTest(ScriptedLoadableModuleTest):
         self.delayDisplay("Loaded test data set")
 
         # Test the module logic
-        logic = SEEG_maskingLogic()
+        logic = SEEG_ElectrodeLocalizationLogic()
         
         # Process the input volume
         outputVolume = logic.process(inputVolume, True)
