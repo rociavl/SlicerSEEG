@@ -1,266 +1,331 @@
-﻿# SlicerSEEG - Automated SEEG Electrode Localization
+﻿# SlicerSEEG
+
+**Automated SEEG Electrode Localization for Epilepsy Surgery Planning**
 
 [![3D Slicer](https://img.shields.io/badge/3D%20Slicer-5.0+-blue.svg)](https://slicer.org/)
 [![License](https://img.shields.io/badge/License-Slicer-green.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-Beta-orange.svg)]()
+[![Python](https://img.shields.io/badge/Python-3.7+-blue.svg)](https://www.python.org/)
+
+---
 
 ## Overview
 
-SlicerSEEG is an automated SEEG (Stereoelectroencephalography) electrode localization system for epilepsy surgery planning. This 3D Slicer extension transforms the manual 4+ hour electrode identification process into a 30-minute automated workflow while maintaining clinical accuracy standards.
+SlicerSEEG is a 3D Slicer extension that automates the localization of SEEG (Stereoelectroencephalography) electrodes from post-operative CT scans. The extension reduces manual processing time from over 4 hours to approximately 30 minutes while maintaining clinical accuracy standards (98.8% within 2mm threshold).
 
-## 🎯 Clinical Impact
+**Clinical Validation**: Active deployment at Hospital del Mar Epilepsy Unit, Barcelona, Spain.
 
-- **Time Reduction**: 4+ hours → 30 minutes (87% reduction in specialist workload)
-- **Accuracy**: 98.8% localization accuracy within 2mm clinical threshold
-- **Patient Safety**: Reduced electrode implantation duration and infection risk
-- **Clinical Deployment**: Active use at Hospital del Mar Epilepsy Unit, Barcelona
+### Key Capabilities
 
-## ✨ Key Features
+- **Automated Brain Extraction**: Deep learning-based segmentation using MONAI 3D U-Net
+- **Electrode Enhancement**: 7 parallel image processing approaches with adaptive thresholding
+- **Ensemble Consensus**: Global voting from 38 segmentation variants
+- **Confidence Analysis**: Machine learning-based electrode validation with graduated certainty scores
+- **Interactive Viewer**: Real-time electrode visualization with adjustable confidence thresholds
+- **Trajectory Reconstruction**: Automated pathway mapping with multi-algorithm consensus
 
-### 🧠 **Automated Brain Extraction**
-- Deep learning-based brain segmentation from post-operative CT scans
-- MONAI-based 3D U-Net architecture
-- Handles metal artifacts and electrode interference
+---
 
-### 🖼️ **Multi-Modal Image Enhancement**
-- 7 specialized image processing approaches
-- Adaptive thresholding with Random Forest prediction
-- Optimized for electrode visibility in challenging CT conditions
+## Installation
 
-### 🗳️ **Global Voting Ensemble**
-- Consensus formation from 38 segmentation variants
-- Intelligent mask selection and quality assessment
-- Redundant detection coverage for robust performance
+### Requirements
 
-### 🎯 **Confidence-Based Authentication**
-- Machine learning classification with graduated certainty scores
-- 38-dimensional feature space for electrode validation
-- Conservative design preserving clinical decision-making authority
+- **3D Slicer**: Version 5.0 or later ([Download](https://download.slicer.org/))
+- **RAM**: 8GB minimum (16GB recommended)
+- **Storage**: 2GB free space
+- **GPU**: Optional (CUDA-compatible GPU improves performance)
 
-### 📊 **Interactive Confidence Viewer**
-- Real-time electrode visualization with adjustable confidence thresholds
-- Statistical analysis of electrode candidates
-- Seamless integration with 3D Slicer markup tools
+### Step 1: Install Python Dependencies
 
-### 🛤️ **Complete Trajectory Reconstruction**
-- End-to-end electrode pathway mapping from cortical entry to deep brain targets
-- Multi-algorithm consensus framework (DBSCAN + Louvain)
-- Automated quality assessment and clinical validation
+SlicerSEEG requires additional Python packages. Open 3D Slicer's Python Interactor (**View → Python Interactor**) and execute:
 
-## 🚀 Installation
-
-### Option 1: Extension Manager (Recommended)
-1. Open 3D Slicer (version 5.0 or later)
-2. Go to **View** → **Extension Manager**
-3. Search for **"SlicerSEEG"**
-4. Click **Install** and restart Slicer
-
-### Option 2: Manual Installation
-```bash
-git clone https://github.com/rociavl/SlicerSEEG.git
-# Follow 3D Slicer extension development guidelines for building
+```python
+import urllib.request
+exec(urllib.request.urlopen('https://raw.githubusercontent.com/rociavl/SlicerSEEG/main/setup_dependencies.py').read().decode())
 ```
 
-## 📖 Quick Start Guide
+**Installation time**: 2-5 minutes. Restart 3D Slicer when complete.
 
-### 1. **Load Your Data**
-- Import post-operative CT scan containing SEEG electrodes
-- Optionally load pre-operative MRI for brain mask (automatic extraction available)
+<details>
+<summary><b>Manual Installation (Click to expand)</b></summary>
 
-### 2. **Launch Module**
-- Navigate to **Modules** → **Segmentation** → **SEEG masking**
-- Select input volumes (CT + optional brain mask)
+```python
+import subprocess, sys
 
-### 3. **Configure Processing**
-- Set output folder name (optional)
-- Keep default settings for standard clinical use
+packages = [
+    'lightgbm',  # Confidence analysis
+    'torch',     # Brain segmentation
+    'monai',     # Medical imaging AI
+    'networkx',  # Trajectory analysis
+    'plotly'     # Interactive visualizations
+]
 
-### 4. **Run Automated Analysis**
-- Click **Apply** to start the 6-stage processing pipeline
-- Monitor progress through console output (~30 minutes total)
+for pkg in packages:
+    subprocess.check_call([sys.executable, '-m', 'pip', 'install', pkg])
+```
 
-### 5. **Review Results**
-- **Brain Mask**: Automated brain extraction results
-- **Enhanced Masks**: 38 processed segmentation variants
-- **Global Masks**: Top-performing consensus masks
-- **Confidence Analysis**: Interactive electrode candidate viewer
+See [requirements.txt](requirements.txt) for complete dependency list.
+</details>
 
-### 6. **Interactive Validation**
-- Use the **Confidence Viewer** to:
-  - Adjust confidence threshold with slider
-  - View electrode statistics in real-time
-  - Export validated coordinates for surgical planning
+### Step 2: Install Extension
 
-## 📁 Output Structure
+#### Option A: Extension Manager (Coming Soon)
+1. Open **View → Extension Manager**
+2. Search for "SlicerSEEG"
+3. Click **Install** and restart Slicer
+
+#### Option B: Manual Installation
+1. Download the [latest release](https://github.com/rociavl/SlicerSEEG/releases)
+2. Extract the archive
+3. In Slicer: **Edit → Application Settings → Modules**
+4. Click **Add** (>>) under "Additional module paths"
+5. Select the `SEEG_ElectrodeLocalization` folder
+6. Click **OK** and restart Slicer
+
+### Step 3: Verify Installation
+
+After restart, navigate to **Modules → Segmentation → SEEG ElectrodeLocalization**. If the module appears, installation was successful.
+
+---
+
+## Usage
+
+### Quick Start
+
+1. **Load Data**
+   - Import post-operative CT scan with SEEG electrodes
+   - (Optional) Load pre-operative MRI for brain mask
+
+2. **Configure Module**
+   - Navigate to **Modules → Segmentation → SEEG ElectrodeLocalization**
+   - Select input volumes:
+     - **MRI Input**: For brain mask generation (or existing mask)
+     - **CT Input**: Post-operative scan with electrodes
+   - (Optional) Set custom output folder name
+
+3. **Run Processing**
+   - Click **Apply**
+   - Monitor progress in Python console (~30 minutes)
+
+4. **Review Results**
+   - **Confidence Viewer**: Adjust threshold slider to filter electrode candidates
+   - **3D View**: Visualize detected electrodes in Slicer's 3D viewer
+   - **Export**: Save validated coordinates for surgical planning
+
+### Output Structure
+
+Results are saved to `~/Documents/SEEG_Results/[folder_name]/`:
 
 ```
 SEEG_Results/
-├── Brain_mask/
-│   └── BrainMask_[CT_Name].nrrd
-├── Enhanced_masks/
-│   ├── [ProcessingMethod1]_[CT_Name].nrrd
-│   ├── [ProcessingMethod2]_[CT_Name].nrrd
-│   └── ... (38 total variants)
-├── Global_masks/
-│   ├── top_mask_1_[CT_Name].nrrd
-│   ├── top_mask_2_[CT_Name].nrrd
-│   └── consensus_50pct_[CT_Name].nrrd
-└── Confidence_Analysis/
-    ├── target_features_[CT_Name]_top_mask_1.csv
-    ├── confidence_predictions_[CT_Name].csv
-    └── confidence_summary_[CT_Name].txt
+├── Brain_mask/              # Automated brain segmentation
+├── Enhanced_masks/          # 38 processed variants
+├── Global_masks/            # Top consensus masks
+│   ├── top_mask_1_*.nrrd
+│   ├── top_mask_2_*.nrrd
+│   └── consensus_50pct_*.nrrd
+└── Confidence_Analysis/     # Electrode validation
+    ├── target_features_*.csv
+    ├── confidence_predictions_*.csv
+    └── confidence_summary_*.txt
 ```
 
-## 🔧 Technical Details
+### Advanced Features
 
-### System Requirements
-- **3D Slicer**: Version 5.0 or later
-- **RAM**: 8GB+ recommended (16GB for large datasets)
-- **Storage**: 2GB free space for processing cache
-- **GPU**: Optional (improves brain segmentation performance)
+<details>
+<summary><b>Trajectory Analysis</b></summary>
 
-### Pipeline Architecture
-1. **Brain Extraction** (MONAI 3D U-Net)
-2. **Image Enhancement** (7 parallel approaches)
-3. **Threshold Prediction** (Random Forest regression)
-4. **Global Voting** (Ensemble consensus)
-5. **Contact Authentication** (LightGBM classification)
-6. **Trajectory Reconstruction** (Multi-algorithm consensus)
+Reconstruct complete electrode trajectories:
 
-### Key Dependencies
-- **Core**: NumPy, SciPy, scikit-learn, pandas
-- **Medical Imaging**: SimpleITK, VTK, MONAI
-- **Machine Learning**: LightGBM, PyTorch
-- **3D Slicer**: Built-in Python environment
+1. Load electrode markups in 3D Slicer
+2. In the **Trajectory Analysis** section:
+   - Select markup node with electrode points
+   - (Optional) Specify trajectory IDs to analyze
+3. Click **Generate Reports and CSV** for analysis
+4. Click **Create Trajectory Lines** for 3D visualization
 
-## 🏥 Clinical Workflow Integration
+</details>
 
-### For Neurologists
-- **Input**: Post-operative CT scan
-- **Processing**: Automated 30-minute analysis
-- **Output**: Validated electrode coordinates with confidence scores
-- **Integration**: Direct export to surgical planning systems
+<details>
+<summary><b>Confidence Threshold Tuning</b></summary>
 
-### For Neurosurgeons  
-- **Review**: Interactive 3D visualization in Slicer
-- **Validation**: Confidence-based electrode acceptance/rejection
-- **Planning**: Complete trajectory information for surgical approach
+Optimize electrode detection for your data:
 
-### For Medical Imaging Specialists
-- **Quality Control**: Automated processing reports and statistics
-- **Customization**: Adjustable confidence thresholds and processing parameters
-- **Documentation**: Comprehensive analysis logs and validation metrics
+- Use slider to adjust confidence threshold (default: 0.05)
+- Higher thresholds: Fewer false positives, stricter validation
+- Lower thresholds: More candidates, broader coverage
+- View real-time statistics in the Confidence Viewer panel
 
-## 📊 Performance Metrics
+</details>
 
-### Clinical Validation (8-patient cohort)
-- **Localization Accuracy**: 98.8% within 2mm clinical threshold
-- **Sensitivity**: 100% electrode detection on held-out patients
-- **Processing Time**: 15-30 minutes depending on electrode count
-- **False Positive Rate**: <5% with confidence-based filtering
+---
 
-### Algorithm Performance
-- **Brain Segmentation**: 0.936 ± 0.011 Dice coefficient
-- **Confidence Calibration**: Conservative design with graduated clinical utility
-- **Trajectory Reconstruction**: 75% automated success rate
+## Technical Details
 
-## 🔬 Research & Development
+### Processing Pipeline
 
-### Published Research
-This extension is based on the bachelor's thesis:
+1. **Brain Extraction** - MONAI 3D U-Net deep learning segmentation
+2. **Image Enhancement** - 7 parallel processing approaches with adaptive thresholding
+3. **Threshold Prediction** - Random Forest regression for optimal parameters
+4. **Global Voting** - Ensemble consensus from 38 segmentation variants
+5. **Confidence Analysis** - LightGBM classification with 38-dimensional features
+6. **Trajectory Reconstruction** - DBSCAN + Louvain community detection
 
-> Ávalos, R. (2025). "Medical Software Module in 3D Slicer for Automatic Segmentation and Trajectory Reconstruction of SEEG Electrodes Using AI and Data Science." Bachelor's Thesis, Universitat Politècnica de Catalunya.
+### Performance Metrics
+
+**Clinical Validation (8-patient cohort, Hospital del Mar)**
+- Localization Accuracy: 98.8% within 2mm clinical threshold
+- Sensitivity: 100% electrode detection
+- Processing Time: 15-30 minutes per case
+- False Positive Rate: <5% with confidence filtering
+- Brain Segmentation: 0.936 ± 0.011 Dice coefficient
+
+### Dependencies
+
+**Core Libraries**
+- NumPy ≥1.20.0, SciPy ≥1.7.0, Pandas ≥1.3.0
+- SimpleITK ≥2.0.0, scikit-image ≥0.18.0, scikit-learn ≥1.0.0
+
+**Machine Learning**
+- LightGBM ≥3.3.0, PyTorch ≥1.10.0, MONAI ≥0.9.0
+
+**Visualization & Analysis**
+- NetworkX ≥2.6.0, Matplotlib ≥3.4.0, Plotly ≥5.0.0
+
+*Note: VTK and Qt are provided by 3D Slicer*
+
+---
+
+## Clinical Workflow
+
+### For Epileptologists & Neurosurgeons
+
+**Input**: Post-operative CT scan (DICOM or NRRD format)
+
+**Processing**: 
+- Automatic brain extraction and electrode detection
+- Confidence-based validation with interactive review
+- Export of validated coordinates in standard formats
+
+**Output**: 
+- Electrode coordinates with confidence scores
+- 3D visualizations for surgical planning
+- Statistical reports and quality metrics
+
+**Integration**: Direct compatibility with 3D Slicer's markup tools and surgical planning modules
+
+---
+
+## Research & Development
+
+### Published Work
+
+This extension is based on:
+
+> Ávalos, R. (2025). "Medical Software Module in 3D Slicer for Automatic Segmentation and Trajectory Reconstruction of SEEG Electrodes Using AI and Data Science." *Bachelor's Thesis, Universitat Politècnica de Catalunya*.
 
 ### Contributing Institutions
-- **Hospital del Mar** - Clinical validation and deployment
-- **UPF Center for Brain and Cognition** - Research collaboration
+
+- **Hospital del Mar** (Barcelona, Spain) - Clinical validation and deployment
+- **Center for Brain and Cognition, UPF** - Research collaboration  
 - **Universitat Politècnica de Catalunya** - Technical development
 
-## 🤝 Contributing
-
-We welcome contributions from the medical imaging and epilepsy research communities:
-
-1. **Fork** the repository
-2. **Create** a feature branch (`git checkout -b feature/AmazingFeature`)
-3. **Commit** your changes (`git commit -m 'Add AmazingFeature'`)
-4. **Push** to the branch (`git push origin feature/AmazingFeature`)
-5. **Open** a Pull Request
-
-### Development Areas
-- Multi-center validation across different electrode manufacturers
-- Integration with additional imaging modalities (fMRI, PET)
-- Real-time processing optimization
-- Extended trajectory analysis algorithms
-
-## 📄 License
-
-This project is licensed under the same terms as 3D Slicer. See [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- **Hospital del Mar Epilepsy Unit** - Clinical expertise and validation data
-- **Dr. Alessandro Principe** - Clinical guidance and neurosurgical insights  
-- **Justo Montoya-Gálvez** - Computational neuroscience collaboration
-- **Prof. Christian Mata** - Academic supervision and project guidance
-- **3D Slicer Community** - Open-source platform and development support
-
-## 📞 Contact
-
-**Rocío Ávalos Morillas**  
-*Biomedical Engineer*  
-*Universitat Politècnica de Catalunya*
-
-- 📧 Email: rocio.avalos029@gmail.com
-- 🔗 LinkedIn: [Rocío Ávalos](https://www.linkedin.com/in/roc%C3%ADo-%C3%A1valos-morillas-04a5372b1/)
-- 🐙 GitHub: [@rociavl](https://github.com/rociavl)
-
-## 📋 Citation
-
-If you use this work in your research, please cite:
+### Citation
 
 ```bibtex
-@misc{avalos2025seeg,
+@mastersthesis{avalos2025seeg,
   title={Medical Software Module in 3D Slicer for Automatic Segmentation and Trajectory Reconstruction of SEEG Electrodes Using AI and Data Science},
   author={Ávalos Morillas, Rocío},
   year={2025},
-  institution={Universitat Politècnica de Catalunya},
+  school={Universitat Politècnica de Catalunya},
+  type={Bachelor's Thesis},
   url={https://github.com/rociavl/SlicerSEEG}
 }
 ```
 
-## 📊 Extension Demonstration
+---
 
-### Confidence-Based Electrode Visualization
-![SEEG Confidence Viewer](https://github.com/user-attachments/assets/be33d580-feb4-4caa-9a48-30ebd59ee7e1)
-*Interactive confidence threshold adjustment with real-time electrode filtering and statistical analysis*
+## Contributing
 
-### Complete Pipeline Results
-![SEEG Processing Pipeline](https://github.com/user-attachments/assets/4e0f3fa7-2de5-4efc-b5d4-10d8878caf77)
-*End-to-end automated processing from CT scan to validated electrode coordinates with clinical-grade accuracy*
+Contributions are welcome from the medical imaging and epilepsy research communities.
 
-## 📞 Support & Contact
+### Development Setup
 
-- **🐛 Bug Reports**: [GitHub Issues](https://github.com/rociavl/SlicerSEEG/issues)
-- **💬 Discussions**: [GitHub Discussions](https://github.com/rociavl/SlicerSEEG/discussions)
-- **📧 Clinical Inquiries**: Contact Hospital del Mar Epilepsy Unit
-- **🎓 Academic Collaboration**: Contact UPF Center for Brain and Cognition
+```bash
+# Clone repository
+git clone https://github.com/rociavl/SlicerSEEG.git
+cd SlicerSEEG
 
-## 📚 Documentation
+# Install development dependencies
+pip install -r requirements.txt
 
-- **User Guide**: [docs/UserGuide.md](docs/UserGuide.md)
-- **Developer Guide**: [docs/DeveloperGuide.md](docs/DeveloperGuide.md)
-- **API Reference**: [docs/API.md](docs/API.md)
-- **Clinical Protocols**: [docs/ClinicalWorkflow.md](docs/ClinicalWorkflow.md)
+# Add to Slicer as described in Installation
+```
 
-## 🔗 Related Resources
+### Contribution Workflow
 
-- [3D Slicer Homepage](https://slicer.org/)
-- [SEEG Methodology Overview](https://doi.org/example-reference)
-- [Epilepsy Surgery Planning Guidelines](https://doi.org/example-clinical-reference)
-- [Medical Image Analysis Best Practices](https://doi.org/example-technical-reference)
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/NewFeature`)
+3. Commit changes (`git commit -m 'Add NewFeature'`)
+4. Push to branch (`git push origin feature/NewFeature`)
+5. Open a Pull Request
+
+### Development Priorities
+
+- Multi-center validation across electrode manufacturers
+- Integration with fMRI and PET modalities
+- Real-time processing optimization
+- Extended trajectory analysis algorithms
 
 ---
 
-**⚡ Transform your SEEG electrode localization workflow today with SlicerSEEG!**
+## Support
 
-*For technical support or clinical implementation questions, please refer to our documentation or contact the development team through GitHub.*
+### Documentation
+
+- **User Guide**: Detailed usage instructions and clinical workflows
+- **API Reference**: Developer documentation for extension integration
+- **Troubleshooting**: Common issues and solutions
+
+### Contact
+
+**Rocío Ávalos Morillas**  
+*Biomedical Engineer, Universitat Politècnica de Catalunya*
+
+- 📧 Email: [rocio.avalos029@gmail.com](mailto:rocio.avalos029@gmail.com)
+- 🔗 LinkedIn: [Rocío Ávalos](https://www.linkedin.com/in/rocío-ávalos-morillas-04a5372b1/)
+- 🐙 GitHub: [@rociavl](https://github.com/rociavl)
+
+### Issue Tracking
+
+- **Bug Reports**: [GitHub Issues](https://github.com/rociavl/SlicerSEEG/issues)
+- **Feature Requests**: [GitHub Discussions](https://github.com/rociavl/SlicerSEEG/discussions)
+- **Clinical Questions**: Contact Hospital del Mar Epilepsy Unit
+
+---
+
+## License
+
+This project is licensed under the same terms as 3D Slicer. See [LICENSE](LICENSE) for details.
+
+## Acknowledgments
+
+- **Dr. Alessandro Principe** - Clinical guidance and validation (Hospital del Mar)
+- **Justo Montoya-Gálvez** - Computational neuroscience collaboration (UPF CBC)
+- **Prof. Christian Mata** - Academic supervision (UPC)
+- **3D Slicer Community** - Open-source platform and development support
+
+---
+
+## Extension Screenshots
+
+### Confidence-Based Electrode Visualization
+![Confidence Viewer](https://github.com/user-attachments/assets/be33d580-feb4-4caa-9a48-30ebd59ee7e1)
+*Interactive confidence threshold adjustment with real-time filtering and statistical analysis*
+
+### Automated Processing Pipeline
+![Processing Results](https://github.com/user-attachments/assets/4e0f3fa7-2de5-4efc-b5d4-10d8878caf77)
+*End-to-end automated workflow from CT scan to validated electrode coordinates*
+
+---
+
+**For technical support or clinical implementation questions, please open an issue on GitHub or contact the development team directly.**
