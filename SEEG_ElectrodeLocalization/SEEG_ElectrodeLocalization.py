@@ -180,8 +180,8 @@ def detect_and_split_bilateral_electrodes(electrode_coords, min_per_hemisphere=2
     return is_bilateral, left_coords, right_coords, hemisphere_info
 
 # Define path to the model
-MODEL_PATH = os.path.join(module_dir, "models", "random_forest_modelP1.joblib")
-CONFIDENCE_MODEL_PATH= os.path.join(module_dir, "models", "patient_leave_one_out_ensemble.joblib")
+MODEL_PATH = os.path.join(module_dir, "Models", "random_forest_modelP1.joblib")
+CONFIDENCE_MODEL_PATH= os.path.join(module_dir, "Models", "patient_leave_one_out_ensemble.joblib")
 
 import slicer
 from slicer.i18n import tr as _
