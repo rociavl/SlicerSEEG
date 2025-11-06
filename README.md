@@ -12,7 +12,6 @@
 
 SlicerSEEG is a 3D Slicer extension that automates the localization of SEEG (Stereoelectroencephalography) electrodes from post-operative CT scans. The extension reduces manual processing time from over 4 hours to approximately 30 minutes while maintaining clinical accuracy standards (98.8% within 2mm threshold).
 
-**Clinical Validation**: Active deployment at Hospital del Mar Epilepsy Unit, Barcelona, Spain.
 
 ### Key Capabilities
 
