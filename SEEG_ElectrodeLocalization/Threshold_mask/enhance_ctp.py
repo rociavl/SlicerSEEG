@@ -569,11 +569,43 @@ def enhance_ctp(inputVolume, inputROI=None, methods = 'all', outputDir=None):
         closed_roi = morphology.binary_closing(filled_roi, struct_elem)
         final_roi = closed_roi
         if closed_roi.shape != volume_array.shape:
-            print("🔄 Shapes don't match. Using spacing/origin-aware resampling...")
-            final_roi = closed_roi
+                print("🔄 Shapes don't match. Using spacing/origin-aware resampling...")
+                print(f"Volume shape: {volume_array.shape}, ROI shape: {closed_roi.shape}")
+                
+                # Create a temporary volume node for the closed ROI
+                temp_roi_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode")
+                temp_roi_node.SetName("temp_roi_for_resampling")
+                temp_roi_node.SetOrigin(inputROI.GetOrigin())
+                temp_roi_node.SetSpacing(inputROI.GetSpacing())
+                ijkToRasMatrix = vtk.vtkMatrix4x4()
+                inputROI.GetIJKToRASMatrix(ijkToRasMatrix)
+                temp_roi_node.SetIJKToRASMatrix(ijkToRasMatrix)
+                slicer.util.updateVolumeFromArray(temp_roi_node, closed_roi)
+                
+                # Create output resampled node
+                resampled_roi_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode")
+                resampled_roi_node.SetName("resampled_roi")
+                
+                parameters = {
+                    "inputVolume": temp_roi_node,
+                    "referenceVolume": inputVolume,
+                    "outputVolume": resampled_roi_node,
+                    "interpolationMode": "NearestNeighbor"
+                }
+                slicer.cli.runSync(slicer.modules.resamplescalarvectordwivolume, None, parameters)
+                
+                # Get the resampled array
+                final_roi = slicer.util.arrayFromVolume(resampled_roi_node)
+                final_roi = (final_roi > 0.5).astype(np.uint8)
+                
+                # Clean up temporary nodes
+                slicer.mrmlScene.RemoveNode(temp_roi_node)
+                slicer.mrmlScene.RemoveNode(resampled_roi_node)
+                
+                print(f"Resampled ROI shape: {final_roi.shape}")
         else:
-            final_roi = closed_roi
-            print("No resizing needed: ROI already has the same shape as volume.")
+                final_roi = closed_roi
+                print("No resizing needed: ROI already has the same shape as volume.")
     else:
         print("No ROI provided. Proceeding without ROI mask.")
         final_roi = np.ones_like(volume_array)

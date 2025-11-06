@@ -196,13 +196,6 @@ We welcome contributions from the medical imaging and epilepsy research communit
 
 This project is licensed under the same terms as 3D Slicer. See [LICENSE](LICENSE) file for details.
 
-## 🙏 Acknowledgments
-
-- **Hospital del Mar Epilepsy Unit** - Clinical expertise and validation data
-- **Dr. Alessandro Principe** - Clinical guidance and neurosurgical insights  
-- **Justo Montoya-Gálvez** - Computational neuroscience collaboration
-- **Prof. Christian Mata** - Academic supervision and project guidance
-- **3D Slicer Community** - Open-source platform and development support
 
 ## 📞 Contact
 
@@ -235,7 +228,8 @@ If you use this work in your research, please cite:
 *Interactive confidence threshold adjustment with real-time electrode filtering and statistical analysis*
 
 ### Complete Pipeline Results
-![SEEG Processing Pipeline](https://github.com/user-attachments/assets/4e0f3fa7-2de5-4efc-b5d4-10d8878caf77)
+![SEEG Processing Pipeline](https://github.com/user-attachments/assets/f63fe9de-6b9e-4983-8c9d-1c622ff518a1)
+
 *End-to-end automated processing from CT scan to validated electrode coordinates with clinical-grade accuracy*
 
 ## 📞 Support & Contact

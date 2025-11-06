@@ -71,8 +71,205 @@ def calculate_angles(direction):
         
     return angles
 
+##----------------------------------------------------------------------------
+# Linear fit 
+#------------------------------------------------------------------------------
+
+def fit_straight_line_to_contacts(coords):
+    """Project coordinates onto their best-fit straight line"""
+    # Use PCA to find best line direction
+    pca = PCA(n_components=3)
+    pca.fit(coords)
+    direction = pca.components_[0]
+    center = np.mean(coords, axis=0)
+    
+    # Project all points onto the line
+    projected_coords = []
+    for point in coords:
+        vec_to_point = point - center
+        projection_distance = np.dot(vec_to_point, direction)
+        projected_point = center + projection_distance * direction
+        projected_coords.append(projected_point)
+    
+    projected_coords = np.array(projected_coords)
+    
+    # Sort coordinates along the line direction
+    distances_along_line = [np.dot(point - center, direction) for point in projected_coords]
+    sorted_indices = np.argsort(distances_along_line)
+    sorted_projected_coords = projected_coords[sorted_indices]
+    
+    return sorted_projected_coords
+
+### debugger
+def create_rejected_trajectories_report(rejected_nonlinear, coords_array, volume_name="debug"):
+    """Simple debug report for rejected trajectories - saves to temp location"""
+    import tempfile
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+    
+    if not rejected_nonlinear:
+        return None
+    
+    # Save to temp directory - won't interfere with extension
+    temp_dir = tempfile.gettempdir()
+    pdf_path = os.path.join(temp_dir, f"debug_rejected_trajectories_{volume_name}.pdf")
+    
+    with PdfPages(pdf_path) as pdf:
+        for rejected in rejected_nonlinear:
+            coords = np.array(rejected['coords'])
+            cluster_id = rejected['cluster_id']
+            linearity = rejected['linearity']
+            
+            fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(11, 8))
+            fig.suptitle(f'DEBUG: Rejected Trajectory {cluster_id} (Linearity: {linearity:.6f})')
+            
+            # 3D plot
+            ax1 = plt.subplot(2, 2, 1, projection='3d')
+            ax1.scatter(coords[:, 0], coords[:, 1], coords[:, 2], c='red', s=50)
+            ax1.plot(coords[:, 0], coords[:, 1], coords[:, 2], 'r-', alpha=0.6)
+            ax1.set_title(f'{len(coords)} contacts')
+            
+            # Angle analysis  
+            angles = []
+            for i in range(1, len(coords) - 1):
+                p1, p2, p3 = coords[i-1], coords[i], coords[i+1]
+                v1, v2 = p2 - p1, p3 - p2
+                v1_norm = v1 / (np.linalg.norm(v1) + 1e-8)
+                v2_norm = v2 / (np.linalg.norm(v2) + 1e-8)
+                angle = 180.0 - np.degrees(np.arccos(np.clip(np.dot(v1_norm, v2_norm), -1.0, 1.0)))
+                angles.append(angle)
+            
+            ax2.plot(range(2, len(coords)), angles, 'bo-')
+            ax2.axhline(y=40, color='red', linestyle='--', label='40° threshold')
+            ax2.set_title(f'Max angle: {max(angles) if angles else 0:.1f}°')
+            ax2.legend()
+            
+            plt.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+    
+    print(f"Debug rejection report: {pdf_path}")
+    return pdf_path
+#------------------------------------------------------------------------------
+
+def recover_rejected_trajectories_with_linear_fit(rejected_nonlinear, max_angle_threshold=40.0):
+    """Split non-linear trajectories at points with excessive curvature angles"""
+    recovered_trajectories = []
+    
+    for rejected in rejected_nonlinear:
+        coords = np.array(rejected['coords'])
+        cluster_id = rejected['cluster_id']
+        original_linearity = rejected['linearity']
+        
+        if len(coords) < 5:  # Need at least 5 points to split meaningfully
+            print(f"Trajectory {cluster_id} too short for angle-based splitting ({len(coords)} contacts)")
+            continue
+            
+        # Calculate curvature angles between consecutive segments
+        curvature_angles = []
+        for i in range(1, len(coords) - 1):
+            p1, p2, p3 = coords[i-1], coords[i], coords[i+1]
+            
+            v1 = p2 - p1
+            v2 = p3 - p2
+            
+            v1_length = np.linalg.norm(v1)
+            v2_length = np.linalg.norm(v2)
+            
+            if v1_length < 1e-6 or v2_length < 1e-6:
+                continue
+                
+            v1_norm = v1 / v1_length
+            v2_norm = v2 / v2_length
+            
+            dot_product = np.dot(v1_norm, v2_norm)
+            angle = 180.0 - np.degrees(np.arccos(np.clip(dot_product, -1.0, 1.0)))
+            curvature_angles.append((i, angle))
+        
+        # Find break points where angle exceeds threshold
+        break_points = [i for i, angle in curvature_angles if angle > max_angle_threshold]
+        
+        if not break_points:
+            # No excessive angles found but still rejected - accept as is
+            recovered_traj = {
+                'cluster_id': f"R_{cluster_id}",
+                'electrode_count': len(coords),
+                'linearity': original_linearity,
+                'coords': coords.tolist(),
+                'sorted_coords': coords.tolist(),
+                'endpoints': [coords[0].tolist(), coords[-1].tolist()],
+                'length_mm': float(np.linalg.norm(coords[-1] - coords[0])),
+                'recovery_method': 'accept_nonlinear',
+                'original_linearity': original_linearity
+            }
+            recovered_trajectories.append(recovered_traj)
+            print(f"Accepted R_{cluster_id}: no excessive angles found, linearity {original_linearity:.3f}")
+            continue
+        
+        # Create segments by splitting at break points
+        segments = []
+        start_idx = 0
+        
+        for break_idx in break_points + [len(coords)]:
+            if break_idx - start_idx >= 3:  # Need at least 3 points for valid segment
+                segment_coords = coords[start_idx:break_idx]
+                segments.append((start_idx, segment_coords))
+            start_idx = break_idx
+        
+        # Create recovered trajectories from valid segments
+        max_angle = max([angle for _, angle in curvature_angles]) if curvature_angles else 0
+        
+        for i, (start_pos, segment_coords) in enumerate(segments):
+            if len(segment_coords) >= 3:
+                # Calculate segment linearity
+                if len(segment_coords) > 2:
+                    from sklearn.decomposition import PCA
+                    pca = PCA(n_components=3)
+                    pca.fit(segment_coords)
+                    segment_linearity = float(pca.explained_variance_ratio_[0])
+                    
+                    # Calculate direction and center
+                    direction = pca.components_[0]
+                    center = np.mean(segment_coords, axis=0)
+                else:
+                    segment_linearity = 1.0
+                    direction = np.array([1, 0, 0])
+                    center = np.mean(segment_coords, axis=0)
+                
+                recovered_traj = {
+                    'cluster_id': f"R{i+1}_{cluster_id}",
+                    'electrode_count': len(segment_coords),
+                    'linearity': segment_linearity,
+                    'coords': segment_coords.tolist(),
+                    'sorted_coords': segment_coords.tolist(),
+                    'endpoints': [segment_coords[0].tolist(), segment_coords[-1].tolist()],
+                    'direction': direction.tolist(),
+                    'center': center.tolist(),
+                    'length_mm': float(np.linalg.norm(segment_coords[-1] - segment_coords[0])),
+                    'recovery_method': 'angle_based_splitting',
+                    'original_cluster_id': cluster_id,
+                    'original_linearity': original_linearity,
+                    'segment_index': i + 1,
+                    'segment_start_contact': start_pos + 1,
+                    'segment_end_contact': start_pos + len(segment_coords),
+                    'break_points': break_points,
+                    'max_angle_in_original': max_angle
+                }
+                
+                recovered_trajectories.append(recovered_traj)
+                print(f"Created segment R{i+1}_{cluster_id}: contacts {start_pos+1}-{start_pos+len(segment_coords)}, "
+                      f"{len(segment_coords)} contacts, linearity={segment_linearity:.3f}")
+        
+        if len(segments) > 0:
+            print(f"Split trajectory {cluster_id} into {len(segments)} segments at break points: {break_points}")
+    
+    return recovered_trajectories
+#------------------------------------------------------------------------------
+
+
 def integrated_trajectory_analysis(coords_array, entry_points=None, max_neighbor_distance=8, min_neighbors=3, 
-                                  expected_spacing_range=(3.0, 5.0)):
+                                  expected_spacing_range=(3.0, 5.0),
+                                  min_linearity_threshold=0.995):
     """
     Core trajectory analysis combining DBSCAN clustering, Louvain community detection,
     and PCA-based trajectory analysis.
@@ -176,6 +373,7 @@ def integrated_trajectory_analysis(coords_array, entry_points=None, max_neighbor
     
     # Trajectory analysis with PCA and spacing validation
     trajectories = []
+    rejected_nonlinear = []
     for cluster_id in unique_clusters:
         if cluster_id == -1:
             continue
@@ -205,6 +403,20 @@ def integrated_trajectory_analysis(coords_array, entry_points=None, max_neighbor
             results['pca_stats'].append(pca_stats)
             
             linearity = pca.explained_variance_ratio_[0]
+
+            #### Linearity check
+            if linearity < min_linearity_threshold:
+                rejected_nonlinear.append({
+                    'cluster_id': cluster_id,
+                    'coords': cluster_coords.tolist(),
+                    'linearity': linearity,
+                    'contact_count': len(cluster_coords),
+                    'pca_components': pca.components_.tolist(),
+                    'pca_mean': pca.mean_.tolist()
+                })
+                print(f"Rejected trajectory {cluster_id}: linearity={linearity:.6f} < {min_linearity_threshold}")
+                continue
+
             direction = pca.components_[0]
             center = np.mean(cluster_coords, axis=0)
             
@@ -265,6 +477,8 @@ def integrated_trajectory_analysis(coords_array, entry_points=None, max_neighbor
     
     results['trajectories'] = trajectories
     results['n_trajectories'] = len(trajectories)
+    results['rejected_nonlinear'] = rejected_nonlinear
+    results['n_rejected'] = len(rejected_nonlinear)
     
     # Add noise points information
     noise_mask = clusters == -1
@@ -2084,11 +2298,11 @@ def create_interactive_3d_plot(coords_array, results, scores_df):
 
 def get_trajectory_coordinates(traj_id, results, coords_array, clusters):
     """
-    ENHANCED VERSION: Get coordinates for any trajectory type with better handling.
+    FIXED VERSION: Check stored coordinates FIRST before cluster mapping
     """
     print(f"    Getting coordinates for trajectory {traj_id}...")
     
-    # Method 1: Check if trajectory has sorted_coords (for merged/split trajectories)
+    # Method 1: Check stored coordinates FIRST (works for hemisphere split trajectories)
     for traj in results.get('trajectories', []):
         if str(traj['cluster_id']) == str(traj_id):
             if 'sorted_coords' in traj and traj['sorted_coords']:
@@ -2097,19 +2311,20 @@ def get_trajectory_coordinates(traj_id, results, coords_array, clusters):
                 return coords
             break
     
-    # Method 2: For regular cluster IDs, try cluster mapping
-    if isinstance(traj_id, (int, np.integer)) or (isinstance(traj_id, str) and traj_id.isdigit()):
-        try:
-            cluster_id_int = int(traj_id)
+    # Method 2: Only then try cluster mapping (for original trajectories)
+    try:
+        cluster_id_int = int(traj_id)
+        # Only try cluster mapping for low-numbered original cluster IDs
+        if cluster_id_int < 100:  
             mask = clusters == cluster_id_int
             if np.any(mask):
                 coords = coords_array[mask]
                 print(f"    Found cluster coordinates: {len(coords)} points")
                 return coords
-        except (ValueError, TypeError):
-            pass
+    except (ValueError, TypeError):
+        pass
     
-    # Method 3: For merged trajectories (M_X_Y format), try to extract original IDs
+    # Method 3: For merged trajectories (M_X_Y format)
     if isinstance(traj_id, str) and traj_id.startswith('M_'):
         try:
             parts = traj_id.replace('M_', '').split('_')
@@ -2126,7 +2341,7 @@ def get_trajectory_coordinates(traj_id, results, coords_array, clusters):
         except (ValueError, TypeError):
             pass
     
-    # Method 4: For split trajectories, try to reconstruct from endpoints
+    # Method 4: Fallback to endpoint reconstruction
     for traj in results.get('trajectories', []):
         if str(traj['cluster_id']) == str(traj_id):
             if 'endpoints' in traj:
@@ -2289,6 +2504,785 @@ def create_interactive_annotation_report(scores_df, static_viz_path, html_path, 
     with open(html_path, 'w') as f:
         f.write(html_content)
 
+### -------------------------------------------------------------------------------
+# Interative report in 3d 
+
+def create_interactive_annotation_report_with_3d(scores_df, coords_array, results, html_path, 
+                                               create_plotly_viz=True, fallback_static_path=None):
+    """
+    Create an enhanced HTML report with embedded 3D visualization.
+    
+    Args:
+        scores_df: DataFrame with trajectory scores
+        coords_array: Electrode coordinates array
+        results: Analysis results dictionary
+        html_path: Path to save HTML file
+        create_plotly_viz: Whether to create interactive Plotly visualization
+        fallback_static_path: Path to static image as fallback
+    """
+    
+    # Generate the 3D visualization
+    interactive_plot_html = ""
+    static_plot_html = ""
+    
+    if create_plotly_viz:
+        try:
+            import plotly.graph_objects as go
+            import plotly.offline as pyo
+            
+            # Create the interactive 3D plot
+            fig = create_enhanced_interactive_3d_plot(coords_array, results, scores_df)
+            
+            if fig is not None:
+                # Convert to HTML div (without full HTML structure)
+                interactive_plot_html = pyo.plot(fig, output_type='div', include_plotlyjs=True)
+                print("✅ Created interactive 3D visualization")
+            else:
+                print("⚠️ Failed to create interactive plot, using fallback")
+                create_plotly_viz = False
+                
+        except ImportError:
+            print("⚠️ Plotly not available, using static visualization")
+            create_plotly_viz = False
+        except Exception as e:
+            print(f"⚠️ Error creating interactive plot: {e}")
+            create_plotly_viz = False
+    
+    # Create fallback static plot if needed
+    if not create_plotly_viz:
+        if fallback_static_path and os.path.exists(fallback_static_path):
+            static_plot_html = f'<img src="{os.path.basename(fallback_static_path)}" alt="3D Trajectory Visualization" style="max-width: 100%; height: auto;">'
+        else:
+            static_plot_html = '<p>3D visualization not available. Please check Plotly installation.</p>'
+    
+    # Enhanced HTML content with embedded 3D plot
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Enhanced Trajectory Analysis Report</title>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            body {{ 
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+                margin: 0; 
+                padding: 20px; 
+                background-color: #f8f9fa;
+            }}
+            .container {{ 
+                max-width: 1400px; 
+                margin: 0 auto; 
+                background-color: white;
+                box-shadow: 0 0 20px rgba(0,0,0,0.1);
+                border-radius: 10px;
+                overflow: hidden;
+            }}
+            .header {{ 
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                padding: 30px; 
+                text-align: center;
+            }}
+            .header h1 {{ 
+                margin: 0; 
+                font-size: 2.5em; 
+                font-weight: 300;
+            }}
+            .header p {{ 
+                margin: 10px 0 0 0; 
+                opacity: 0.9; 
+                font-size: 1.1em;
+            }}
+            .content {{ 
+                padding: 30px; 
+            }}
+            .viz-section {{ 
+                margin: 30px 0; 
+                border: 2px solid #e9ecef;
+                border-radius: 10px;
+                overflow: hidden;
+            }}
+            .viz-header {{ 
+                background-color: #f8f9fa; 
+                padding: 20px; 
+                border-bottom: 1px solid #e9ecef;
+            }}
+            .viz-header h2 {{ 
+                margin: 0; 
+                color: #495057;
+                font-size: 1.8em;
+            }}
+            .viz-controls {{ 
+                text-align: center; 
+                padding: 15px; 
+                background-color: #e3f2fd; 
+                border-bottom: 1px solid #bbdefb;
+            }}
+            .viz-controls button {{ 
+                padding: 12px 24px; 
+                margin: 0 10px; 
+                font-size: 14px; 
+                font-weight: 600;
+                border: none; 
+                border-radius: 25px; 
+                cursor: pointer; 
+                transition: all 0.3s ease;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }}
+            .viz-controls button.active {{ 
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white; 
+                box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            }}
+            .viz-controls button:not(.active) {{ 
+                background-color: white; 
+                color: #667eea; 
+                border: 2px solid #667eea; 
+            }}
+            .viz-controls button:hover {{ 
+                transform: translateY(-2px);
+                box-shadow: 0 6px 20px rgba(0,0,0,0.15);
+            }}
+            .viz-container {{ 
+                padding: 20px;
+                min-height: 600px;
+                background-color: #fafafa;
+            }}
+            .viz-display {{ 
+                width: 100%; 
+                min-height: 600px;
+                border-radius: 8px;
+                overflow: hidden;
+                background-color: white;
+                box-shadow: inset 0 2px 10px rgba(0,0,0,0.1);
+            }}
+            .instructions {{ 
+                background: linear-gradient(135deg, #e3f2fd 0%, #f3e5f5 100%);
+                padding: 25px; 
+                border-radius: 10px; 
+                margin: 30px 0;
+                border-left: 5px solid #667eea;
+            }}
+            .instructions h3 {{ 
+                margin-top: 0; 
+                color: #1976d2;
+                font-size: 1.5em;
+            }}
+            .instructions ol {{ 
+                font-size: 1.1em; 
+                line-height: 1.6;
+            }}
+            .instructions li {{ 
+                margin: 10px 0; 
+            }}
+            .instructions code {{ 
+                background-color: rgba(0,0,0,0.1); 
+                padding: 3px 6px; 
+                border-radius: 4px; 
+                font-family: 'Courier New', monospace;
+            }}
+            .table-section {{ 
+                margin: 30px 0; 
+                border-radius: 10px;
+                overflow: hidden;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            }}
+            .table-header {{ 
+                background-color: #495057; 
+                color: white; 
+                padding: 20px; 
+            }}
+            .table-header h2 {{ 
+                margin: 0; 
+                font-size: 1.8em;
+            }}
+            .table-container {{ 
+                overflow-x: auto; 
+                background-color: white;
+            }}
+            table {{ 
+                border-collapse: collapse; 
+                width: 100%; 
+                font-size: 0.9em;
+            }}
+            th, td {{ 
+                padding: 12px 8px; 
+                text-align: left; 
+                border-bottom: 1px solid #dee2e6;
+            }}
+            th {{ 
+                background-color: #f8f9fa; 
+                font-weight: 600;
+                color: #495057;
+                position: sticky;
+                top: 0;
+            }}
+            tr:hover {{ 
+                background-color: #f5f5f5; 
+            }}
+            .good {{ background-color: #d4edda !important; }}
+            .ok {{ background-color: #fff3cd !important; }}
+            .bad {{ background-color: #f8d7da !important; }}
+            .stats-grid {{ 
+                display: grid; 
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); 
+                gap: 20px; 
+                margin: 30px 0;
+            }}
+            .stat-card {{ 
+                background: white; 
+                padding: 20px; 
+                border-radius: 10px; 
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                text-align: center;
+                border-top: 4px solid #667eea;
+            }}
+            .stat-value {{ 
+                font-size: 2.5em; 
+                font-weight: bold; 
+                color: #667eea; 
+                display: block;
+            }}
+            .stat-label {{ 
+                color: #6c757d; 
+                font-size: 0.9em; 
+                text-transform: uppercase; 
+                letter-spacing: 0.5px;
+                margin-top: 5px;
+            }}
+            .legend {{ 
+                display: flex; 
+                justify-content: center; 
+                gap: 30px; 
+                margin: 20px 0;
+                flex-wrap: wrap;
+            }}
+            .legend-item {{ 
+                display: flex; 
+                align-items: center; 
+                gap: 8px;
+                font-weight: 600;
+            }}
+            .legend-color {{ 
+                width: 20px; 
+                height: 20px; 
+                border-radius: 50%; 
+                border: 2px solid white;
+                box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            }}
+            .footer {{ 
+                text-align: center; 
+                padding: 20px; 
+                background-color: #f8f9fa; 
+                color: #6c757d; 
+                font-size: 0.9em;
+            }}
+            
+            /* Responsive design */
+            @media (max-width: 768px) {{
+                .container {{ margin: 10px; }}
+                .content {{ padding: 15px; }}
+                .header {{ padding: 20px; }}
+                .header h1 {{ font-size: 2em; }}
+                .viz-controls button {{ 
+                    padding: 10px 16px; 
+                    margin: 5px; 
+                    font-size: 12px;
+                }}
+                .stats-grid {{ grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }}
+            }}
+        </style>
+        
+        <!-- Include Plotly.js if using interactive visualization -->
+        {"" if not create_plotly_viz else '''
+        <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+        '''}
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1>SEEG Electrode Trajectory Analysis</h1>
+                <p>Interactive 3D Visualization and Quality Assessment Report</p>
+            </div>
+            
+            <div class="content">
+                <!-- Analysis Statistics -->
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <span class="stat-value">{len(scores_df)}</span>
+                        <div class="stat-label">Total Trajectories</div>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-value">{len(scores_df[scores_df['algorithm_score'] >= 80])}</span>
+                        <div class="stat-label">High Quality (≥80)</div>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-value">{len(scores_df[(scores_df['algorithm_score'] >= 60) & (scores_df['algorithm_score'] < 80)])}</span>
+                        <div class="stat-label">Medium Quality (60-79)</div>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-value">{len(scores_df[scores_df['algorithm_score'] < 60])}</span>
+                        <div class="stat-label">Low Quality (<60)</div>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-value">{scores_df['algorithm_score'].mean():.1f}</span>
+                        <div class="stat-label">Average Score</div>
+                    </div>
+                </div>
+                
+                <!-- 3D Visualization Section -->
+                <div class="viz-section">
+                    <div class="viz-header">
+                        <h2>Interactive 3D Electrode Trajectory Visualization</h2>
+                    </div>
+                    
+                    {"" if not create_plotly_viz else '''
+                    <div class="viz-controls">
+                        <button id="rotateBtn" onclick="startRotation()">🔄 Auto Rotate</button>
+                        <button id="resetBtn" onclick="resetView()">🏠 Reset View</button>
+                        <button id="fullscreenBtn" onclick="toggleFullscreen()">⛶ Fullscreen</button>
+                    </div>
+                    '''}
+                    
+                    <div class="viz-container">
+                        {"" if not create_plotly_viz else '''
+                        <div id="interactive3d" class="viz-display">
+                        ''' + interactive_plot_html + '''
+                        </div>
+                        '''}
+                        
+                        {"" if create_plotly_viz else f'''
+                        <div id="static3d" class="viz-display" style="display: flex; align-items: center; justify-content: center;">
+                            {static_plot_html}
+                        </div>
+                        '''}
+                    </div>
+                    
+                    <!-- Legend -->
+                    <div class="legend">
+                        <div class="legend-item">
+                            <div class="legend-color" style="background-color: green;"></div>
+                            <span>Good Quality (≥80)</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background-color: orange;"></div>
+                            <span>Medium Quality (60-79)</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background-color: red;"></div>
+                            <span>Low Quality (<60)</span>
+                        </div>
+                        <div class="legend-item">
+                            <div class="legend-color" style="background-color: lightgray;"></div>
+                            <span>All Electrode Contacts</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Instructions -->
+                <div class="instructions">
+                    <h3>📋 Annotation Instructions</h3>
+                    <ol>
+                        <li><strong>Interact with the 3D plot:</strong> Rotate, zoom, and hover over trajectories to inspect them in detail</li>
+                        <li><strong>Open the CSV file:</strong> <code>trajectory_scores_for_annotation.csv</code></li>
+                        <li><strong>Provide feedback:</strong> Fill in the <code>feedback_label</code> column with: <strong>GOOD</strong>, <strong>BAD</strong>, or <strong>UNCERTAIN</strong></li>
+                        <li><strong>Add notes:</strong> Use the <code>notes</code> column for detailed observations</li>
+                        <li><strong>Focus on discrepancies:</strong> Pay special attention to trajectories where the algorithm score disagrees with your visual assessment</li>
+                        <li><strong>Use trajectory IDs:</strong> Match trajectories in the visualization with their IDs in the table below</li>
+                    </ol>
+                </div>
+                
+                <!-- Data Table -->
+                <div class="table-section">
+                    <div class="table-header">
+                        <h2>📊 Trajectory Analysis Results</h2>
+                    </div>
+                    <div class="table-container">
+                        {create_enhanced_table_html(scores_df)}
+                    </div>
+                </div>
+            </div>
+            
+            <div class="footer">
+                <p>Generated by SEEG Electrode Trajectory Analysis Module | 
+                Report created on {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+            </div>
+        </div>
+        
+        <script>
+            // Interactive controls for Plotly visualization
+            {"" if not create_plotly_viz else '''
+            let rotationInterval = null;
+            let isRotating = false;
+            
+            function startRotation() {
+                const plotDiv = document.querySelector('#interactive3d .plotly-graph-div');
+                if (!plotDiv) return;
+                
+                if (isRotating) {
+                    clearInterval(rotationInterval);
+                    document.getElementById('rotateBtn').innerHTML = '🔄 Auto Rotate';
+                    isRotating = false;
+                } else {
+                    let angle = 0;
+                    rotationInterval = setInterval(() => {
+                        angle += 2;
+                        const update = {
+                            'scene.camera.eye': {
+                                x: 1.5 * Math.cos(angle * Math.PI / 180),
+                                y: 1.5 * Math.sin(angle * Math.PI / 180),
+                                z: 1.5
+                            }
+                        };
+                        Plotly.relayout(plotDiv, update);
+                    }, 100);
+                    document.getElementById('rotateBtn').innerHTML = '⏸️ Stop Rotation';
+                    isRotating = true;
+                }
+            }
+            
+            function resetView() {
+                const plotDiv = document.querySelector('#interactive3d .plotly-graph-div');
+                if (!plotDiv) return;
+                
+                if (isRotating) {
+                    clearInterval(rotationInterval);
+                    document.getElementById('rotateBtn').innerHTML = '🔄 Auto Rotate';
+                    isRotating = false;
+                }
+                
+                const update = {
+                    'scene.camera.eye': { x: 1.5, y: 1.5, z: 1.5 },
+                    'scene.camera.center': { x: 0, y: 0, z: 0 },
+                    'scene.camera.up': { x: 0, y: 0, z: 1 }
+                };
+                Plotly.relayout(plotDiv, update);
+            }
+            
+            function toggleFullscreen() {
+                const plotDiv = document.querySelector('#interactive3d');
+                if (!plotDiv) return;
+                
+                if (!document.fullscreenElement) {
+                    plotDiv.requestFullscreen().catch(err => {
+                        console.log('Error attempting to enable fullscreen:', err.message);
+                    });
+                } else {
+                    document.exitFullscreen();
+                }
+            }
+            
+            // Handle fullscreen changes
+            document.addEventListener('fullscreenchange', () => {
+                const plotDiv = document.querySelector('#interactive3d .plotly-graph-div');
+                if (plotDiv) {
+                    setTimeout(() => {
+                        Plotly.Plots.resize(plotDiv);
+                    }, 100);
+                }
+            });
+            '''}
+            
+            // Add color coding to table rows
+            document.addEventListener('DOMContentLoaded', function() {{
+                const rows = document.querySelectorAll('#scores_table tbody tr');
+                rows.forEach(row => {{
+                    const scoreCell = row.querySelector('.score-cell');
+                    if (scoreCell) {{
+                        const score = parseFloat(scoreCell.textContent);
+                        if (score >= 80) {{
+                            row.classList.add('good');
+                        }} else if (score >= 60) {{
+                            row.classList.add('ok');
+                        }} else {{
+                            row.classList.add('bad');
+                        }}
+                    }}
+                }});
+            }});
+            
+            // Smooth scrolling for anchor links
+            document.querySelectorAll('a[href^="#"]').forEach(anchor => {{
+                anchor.addEventListener('click', function (e) {{
+                    e.preventDefault();
+                    document.querySelector(this.getAttribute('href')).scrollIntoView({{
+                        behavior: 'smooth'
+                    }});
+                }});
+            }});
+        </script>
+    </body>
+    </html>
+    """
+    
+    # Write the HTML file
+    with open(html_path, 'w', encoding='utf-8') as f:
+        f.write(html_content)
+    
+    print(f"✅ Enhanced HTML report with 3D visualization saved to: {html_path}")
+
+
+def create_enhanced_interactive_3d_plot(coords_array, results, scores_df):
+    """
+    Create enhanced interactive 3D plot with better styling and features.
+    """
+    try:
+        import plotly.graph_objects as go
+        
+        clusters = np.array([node[1]['dbscan_cluster'] for node in results['graph'].nodes(data=True)])
+        
+        fig = go.Figure()
+        
+        # Plot all electrode contacts as background
+        fig.add_trace(go.Scatter3d(
+            x=coords_array[:, 0],
+            y=coords_array[:, 1], 
+            z=coords_array[:, 2],
+            mode='markers',
+            marker=dict(
+                size=3,
+                color='lightgray',
+                opacity=0.4,
+                line=dict(width=0.5, color='darkgray')
+            ),
+            name='All Electrode Contacts',
+            hovertemplate='<b>Electrode Contact</b><br>' +
+                         'X: %{x:.1f} mm<br>' +
+                         'Y: %{y:.1f} mm<br>' +
+                         'Z: %{z:.1f} mm<br>' +
+                         '<extra></extra>'
+        ))
+        
+        # Color mapping for quality levels
+        quality_colors = {
+            'Good': '#2E8B57',      # Sea Green
+            'Medium': '#FF8C00',    # Dark Orange  
+            'Low': '#DC143C'        # Crimson
+        }
+        
+        quality_symbols = {
+            'Good': 'circle',
+            'Medium': 'square',
+            'Low': 'diamond'
+        }
+        
+        # Plot each trajectory with enhanced styling
+        for _, row in scores_df.iterrows():
+            traj_id = row['trajectory_id']
+            score = row['algorithm_score']
+            
+            cluster_coords = get_trajectory_coordinates(traj_id, results, coords_array, clusters)
+            
+            if cluster_coords is None or len(cluster_coords) == 0:
+                continue
+            
+            # Determine quality level and styling
+            if score >= 80:
+                quality = 'Good'
+                line_width = 6
+                marker_size = 8
+            elif score >= 60:
+                quality = 'Medium'
+                line_width = 5
+                marker_size = 7
+            else:
+                quality = 'Low'
+                line_width = 4
+                marker_size = 6
+            
+            color = quality_colors[quality]
+            symbol = quality_symbols[quality]
+            
+            # Create detailed hover text
+            hover_text = []
+            for i, coord in enumerate(cluster_coords):
+                hover_text.append(
+                    f"<b>Trajectory {traj_id}</b><br>" +
+                    f"<b>Quality: {quality}</b><br>" +
+                    f"Contact {i+1} of {len(cluster_coords)}<br>" +
+                    f"Position: ({coord[0]:.1f}, {coord[1]:.1f}, {coord[2]:.1f}) mm<br>" +
+                    f"Algorithm Score: {score:.1f}<br>" +
+                    f"Contacts: {row.get('n_contacts', len(cluster_coords))}<br>" +
+                    f"Linearity: {row.get('linearity_pca', 0):.3f}<br>" +
+                    f"Max Curvature: {row.get('angle_max_curvature', 0):.1f}°"
+                )
+            
+            # Plot trajectory with enhanced styling
+            fig.add_trace(go.Scatter3d(
+                x=cluster_coords[:, 0],
+                y=cluster_coords[:, 1],
+                z=cluster_coords[:, 2],
+                mode='markers+lines',
+                line=dict(
+                    color=color, 
+                    width=line_width,
+                    dash='solid'
+                ),
+                marker=dict(
+                    size=marker_size,
+                    color=color,
+                    symbol=symbol,
+                    line=dict(width=1, color='white'),
+                    opacity=0.9
+                ),
+                name=f'T{traj_id} - {quality} ({score:.0f})',
+                hovertemplate='%{text}<extra></extra>',
+                text=hover_text,
+                showlegend=True,
+                legendgroup=quality
+            ))
+        
+        # Enhanced layout with better styling
+        fig.update_layout(
+            title=dict(
+                text='Interactive 3D SEEG Electrode Trajectory Analysis',
+                font=dict(size=20, color='#2c3e50'),
+                x=0.5
+            ),
+            scene=dict(
+                xaxis=dict(
+                    title='X (mm) - Left ← → Right',
+                    titlefont=dict(size=14),
+                    showgrid=True,
+                    gridcolor='lightgray',
+                    backgroundcolor='white',
+                    showbackground=True
+                ),
+                yaxis=dict(
+                    title='Y (mm) - Posterior ← → Anterior', 
+                    titlefont=dict(size=14),
+                    showgrid=True,
+                    gridcolor='lightgray',
+                    backgroundcolor='white',
+                    showbackground=True
+                ),
+                zaxis=dict(
+                    title='Z (mm) - Inferior ← → Superior',
+                    titlefont=dict(size=14), 
+                    showgrid=True,
+                    gridcolor='lightgray',
+                    backgroundcolor='white',
+                    showbackground=True
+                ),
+                camera=dict(
+                    eye=dict(x=1.5, y=1.5, z=1.5),
+                    center=dict(x=0, y=0, z=0),
+                    up=dict(x=0, y=0, z=1)
+                ),
+                aspectmode='cube',
+                bgcolor='rgba(240,240,240,0.1)'
+            ),
+            legend=dict(
+                x=0.02,
+                y=0.98,
+                bgcolor='rgba(255,255,255,0.8)',
+                bordercolor='gray',
+                borderwidth=1,
+                font=dict(size=10)
+            ),
+            margin=dict(l=0, r=0, t=40, b=0),
+            height=600,
+            paper_bgcolor='white',
+            plot_bgcolor='white'
+        )
+        
+        # Add annotations
+        fig.add_annotation(
+            text="📌 Hover over trajectories for details | 🖱️ Click and drag to rotate | 🔍 Scroll to zoom",
+            xref="paper", yref="paper",
+            x=0.5, y=0.02,
+            showarrow=False,
+            font=dict(size=12, color="gray"),
+            bgcolor="rgba(255,255,255,0.8)",
+            bordercolor="gray",
+            borderwidth=1
+        )
+        
+        return fig
+        
+    except Exception as e:
+        print(f"Error creating enhanced 3D plot: {e}")
+        return None
+
+
+def create_enhanced_table_html(scores_df):
+    """Create enhanced HTML table with better formatting."""
+    
+    # Round numerical columns for display
+    display_df = scores_df.copy()
+    
+    # Format numerical columns
+    numerical_cols = ['algorithm_score', 'linearity_pca', 'angle_max_curvature', 
+                     'spacing_mean', 'length_mm']
+    
+    for col in numerical_cols:
+        if col in display_df.columns:
+            display_df[col] = display_df[col].round(2)
+    
+    # Create custom HTML table with enhanced styling
+    html_table = '''
+    <table id="scores_table">
+        <thead>
+            <tr>
+                <th>Trajectory ID</th>
+                <th>Contacts</th>
+                <th class="score-header">Algorithm Score</th>
+                <th>Quality</th>
+                <th>Linearity</th>
+                <th>Max Curvature (°)</th>
+                <th>Length (mm)</th>
+                <th>Feedback Label</th>
+                <th>Notes</th>
+            </tr>
+        </thead>
+        <tbody>
+    '''
+    
+    for _, row in display_df.iterrows():
+        score = row['algorithm_score']
+        quality = 'Good' if score >= 80 else 'Medium' if score >= 60 else 'Low'
+        quality_badge = f'<span class="quality-badge quality-{quality.lower()}">{quality}</span>'
+        
+        html_table += f'''
+            <tr>
+                <td><strong>T{row['trajectory_id']}</strong></td>
+                <td>{row.get('n_contacts', 'N/A')}</td>
+                <td class="score-cell"><strong>{score:.1f}</strong></td>
+                <td>{quality_badge}</td>
+                <td>{row.get('linearity_pca', 0):.3f}</td>
+                <td>{row.get('angle_max_curvature', 0):.1f}</td>
+                <td>{row.get('length_mm', 0):.1f}</td>
+                <td><em>To be filled</em></td>
+                <td><em>To be filled</em></td>
+            </tr>
+        '''
+    
+    html_table += '''
+        </tbody>
+    </table>
+    
+    <style>
+        .quality-badge {
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 0.8em;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+        .quality-good { background-color: #d4edda; color: #155724; }
+        .quality-medium { background-color: #fff3cd; color: #856404; }
+        .quality-low { background-color: #f8d7da; color: #721c24; }
+        .score-cell { font-weight: bold; text-align: center; }
+        .score-header { text-align: center; }
+    </style>
+    '''
+    
+    return html_table
+
+
+# -------------------------------------------------------------------------------
 def create_basic_3d_plot(coords_array, results, scores_df, output_path):
     """Create basic 3D plot with trajectory scores."""
     fig = plt.figure(figsize=(12, 10))
@@ -2749,6 +3743,18 @@ def process_hemisphere_trajectories(hemisphere_results, hemisphere_coords,
         trajectories.append(new_traj)
     
     return trajectories
+
+
+########################################
+# debug
+
+
+
+
+
+
+
+
 #------------------------------------------------------------------------------
 # MAIN STREAMLINED FUNCTION
 #------------------------------------------------------------------------------
@@ -2915,7 +3921,8 @@ def main(use_combined_volume=True, use_original_reports=True,
                         entry_points=entry_points,
                         max_neighbor_distance=optimal_eps,
                         min_neighbors=optimal_min_neighbors,
-                        expected_spacing_range=expected_spacing_range if validate_spacing else None
+                        expected_spacing_range=expected_spacing_range if validate_spacing else None,
+                        min_linearity_threshold=0.995
                     )
                     
                     integrated_results['parameter_search'] = parameter_search
@@ -2986,13 +3993,24 @@ def main(use_combined_volume=True, use_original_reports=True,
                     expected_spacing_range=expected_spacing_range if validate_spacing else None
                 )
 
+        if 'rejected_nonlinear' in integrated_results and len(integrated_results['rejected_nonlinear']) > 0:
+            print(f"Attempting linear recovery on {len(integrated_results['rejected_nonlinear'])} rejected trajectories...")
+            create_rejected_trajectories_report(integrated_results['rejected_nonlinear'], coords_array)
+            recovered = recover_rejected_trajectories_with_linear_fit(integrated_results['rejected_nonlinear'])
+            
+            if recovered:
+                integrated_results['trajectories'].extend(recovered)
+                integrated_results['n_trajectories'] += len(recovered)
+                integrated_results['recovered_trajectories'] = recovered
+                print(f"Recovered {len(recovered)} trajectories using linear projection")
+    
+
         if hemisphere.lower() == 'both':
             print("Applying hemisphere splitting for trajectories that cross the boundary (x=0)...")
             integrated_results = apply_hemisphere_splitting_to_results(
                 integrated_results, coords_array, hemisphere
             )
 
-        # *** CRITICAL FIX: Ensure all trajectories have sorted_coords BEFORE refinement ***
         print("Ensuring all trajectories have sorted coordinates...")
         clusters = np.array([node[1]['dbscan_cluster'] for node in integrated_results['graph'].nodes(data=True)])
 
@@ -3001,7 +4019,7 @@ def main(use_combined_volume=True, use_original_reports=True,
             
             # Only process original trajectories (not already split/merged ones)
             if 'sorted_coords' not in traj or not traj['sorted_coords']:
-                # Get coordinates for this trajectory from the graph
+                # Get coordinates for this trajectory from the graphif 'rejected_nonlinear' in integrated_results
                 mask = clusters == cluster_id
                 
                 if np.sum(mask) > 0:
@@ -3183,11 +4201,23 @@ def main(use_combined_volume=True, use_original_reports=True,
                 
                 # Create HTML report
                 html_path = os.path.join(output_dir, 'trajectory_annotation_report.html')
-                create_interactive_annotation_report(
-                    scores_df, 
-                    static_viz_path, 
-                    html_path,
-                    interactive_viz_path if create_interactive_annotation else None
+                # Generate the legacy interactive annotation report (static + iframe)
+                # This version uses a static image and optionally an interactive Plotly HTML file.
+                # For enhanced styling and embedded Plotly, use create_interactive_annotation_report_with_3d instead.
+                #create_interactive_annotation_report(
+                #    scores_df, 
+                #    static_viz_path, 
+                #    html_path,
+                #    interactive_viz_path if create_interactive_annotation else None
+                #)
+
+                create_interactive_annotation_report_with_3d(
+                    scores_df=scores_df,
+                    coords_array=coords_array, 
+                    results=integrated_results,
+                    html_path=html_path,
+                    create_plotly_viz=True,  # Set to False if Plotly unavailable
+                    fallback_static_path=static_viz_path
                 )
                 
                 print(f"✅ Static 3D visualization saved to: {static_viz_path}")
