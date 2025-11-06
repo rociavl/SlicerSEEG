@@ -42,7 +42,7 @@ if centroids_pipeline_dir not in sys.path:
 from centroids_feature_extraction import extract_all_target_features
 
 # TRAJECTORY PART
-# === ADD THIS NEW SECTION FOR TRAJECTORY ANALYSIS ===
+# TRAJECTORY ANALYSIS ===
 electrode_path_dir = os.path.join(module_dir, "Electrode_path")
 if electrode_path_dir not in sys.path:
     sys.path.append(electrode_path_dir)
@@ -56,7 +56,9 @@ try:
         create_basic_3d_plot,
         analyze_both_hemispheres_separately,
         apply_hemisphere_splitting_to_results,
-        adaptive_clustering_parameters
+        adaptive_clustering_parameters,
+        get_trajectory_coordinates,
+        recover_rejected_trajectories_with_linear_fit
     )
     TRAJECTORY_ANALYSIS_AVAILABLE = True
     print("✅ Trajectory analysis module loaded successfully")
@@ -64,6 +66,87 @@ except ImportError as e:
     print(f"⚠️ Trajectory analysis module not available: {e}")
     TRAJECTORY_ANALYSIS_AVAILABLE = False
  
+####resampling
+def resample_brain_mask_to_ct(brain_mask_node, ct_volume_node):
+    """
+    Resample brain mask to match CT volume dimensions and spacing.
+    """
+    import time
+    
+    try:
+        logging.info("Resampling brain mask to match CT volume...")
+        
+        # Create temporary node WITHOUT specifying name in constructor
+        temp_brain_mask = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode")
+        temp_brain_mask.SetName(f"temp_brain_mask_{int(time.time())}")
+        
+        # Copy properties
+        temp_brain_mask.SetOrigin(brain_mask_node.GetOrigin())
+        temp_brain_mask.SetSpacing(brain_mask_node.GetSpacing())
+        
+        # Copy matrix
+        ijkToRasMatrix = vtk.vtkMatrix4x4()
+        brain_mask_node.GetIJKToRASMatrix(ijkToRasMatrix)
+        temp_brain_mask.SetIJKToRASMatrix(ijkToRasMatrix)
+        
+        # Copy image data
+        brain_mask_array = slicer.util.arrayFromVolume(brain_mask_node)
+        slicer.util.updateVolumeFromArray(temp_brain_mask, brain_mask_array)
+        
+        # Create output node WITHOUT specifying name in constructor
+        resampled_brain_mask = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode")
+        resampled_brain_mask.SetName(f"resampled_brain_mask_{int(time.time())}")
+        
+        # Get reference CT volume matrix
+        reference_ijk_to_ras_matrix = vtk.vtkMatrix4x4()
+        ct_volume_node.GetIJKToRASMatrix(reference_ijk_to_ras_matrix)
+        
+        # Set up resampling parameters
+        parameters = {
+            "inputVolume": temp_brain_mask,
+            "referenceVolume": ct_volume_node,
+            "outputVolume": resampled_brain_mask,
+            "interpolationMode": "NearestNeighbor"
+        }
+        
+        # Run resampling
+        result = slicer.cli.runSync(slicer.modules.resamplescalarvectordwivolume, None, parameters)
+        
+        # Set the correct matrix
+        resampled_brain_mask.SetIJKToRASMatrix(reference_ijk_to_ras_matrix)
+        
+        # Verify shapes match
+        resampled_array = slicer.util.arrayFromVolume(resampled_brain_mask)
+        ct_array = slicer.util.arrayFromVolume(ct_volume_node)
+        
+        if resampled_array.shape != ct_array.shape:
+            raise RuntimeError(f"Resampling failed - shapes still don't match: {resampled_array.shape} vs {ct_array.shape}")
+        
+        # Clean up temporary node
+        slicer.mrmlScene.RemoveNode(temp_brain_mask)
+        
+        logging.info(f"Brain mask successfully resampled: {brain_mask_array.shape} -> {resampled_array.shape}")
+        return resampled_brain_mask
+        
+    except Exception as e:
+        # Clean up on failure
+        if 'temp_brain_mask' in locals():
+            try:
+                slicer.mrmlScene.RemoveNode(temp_brain_mask)
+            except:
+                pass
+        if 'resampled_brain_mask' in locals():
+            try:
+                slicer.mrmlScene.RemoveNode(resampled_brain_mask)
+            except:
+                pass
+        
+        logging.error(f"Brain mask resampling failed: {e}")
+        raise
+
+
+
+
  ###--Bilateral detection and splitting function--###
 def detect_and_split_bilateral_electrodes(electrode_coords, min_per_hemisphere=2):
     """
@@ -365,7 +448,7 @@ def run_embedded_confidence_analysis(brain_mask_file, top_mask_file, enhanced_ct
         raise
 
 
-
+#### DEBUG 
 
 
 def create_confidence_summary(confidence_results, summary_file, volume_name, 
@@ -854,84 +937,7 @@ def run_enhanced_trajectory_analysis_with_adaptive_clustering(markup_node, traje
         traceback.print_exc()
         return {'success': False, 'error': str(e)}
 
-def create_trajectory_lines_in_slicer(trajectory_results, markup_node, coords_array):
-    """
-    Create trajectory lines in 3D Slicer based on analysis results.
-    
-    Args:
-        trajectory_results: Results from trajectory analysis
-        markup_node: Original markup node with points
-        coords_array: Array of coordinates
-    
-    Returns:
-        list: Created trajectory line nodes
-    """
-    try:
-        line_nodes = []
-        
-        if 'graph' not in trajectory_results:
-            logging.warning("No graph data in trajectory results")
-            return line_nodes
-        
-        clusters = np.array([node[1]['dbscan_cluster'] for node in trajectory_results['graph'].nodes(data=True)])
-        
-        for trajectory in trajectory_results['trajectories']:
-            cluster_id = trajectory['cluster_id']
-            
-            # Find points belonging to this trajectory
-            cluster_mask = clusters == cluster_id
-            cluster_indices = np.where(cluster_mask)[0]
-            
-            if len(cluster_indices) < 2:
-                continue
-            
-            # Get coordinates and sort along trajectory
-            cluster_coords = coords_array[cluster_indices]
-            
-            if 'direction' in trajectory and len(cluster_coords) > 2:
-                direction = np.array(trajectory['direction'])
-                center = np.mean(cluster_coords, axis=0)
-                projected = np.dot(cluster_coords - center, direction)
-                sorted_indices = np.argsort(projected)
-                cluster_coords = cluster_coords[sorted_indices]
-            
-            # Create line markup node
-            line_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsLineNode", 
-                                                          f"Trajectory_{cluster_id}")
-            
-            # Add points to create trajectory line
-            for i, coord in enumerate(cluster_coords):
-                if i == 0:
-                    line_node.SetNthControlPointPosition(0, coord[0], coord[1], coord[2])
-                elif i == 1:
-                    line_node.SetNthControlPointPosition(1, coord[0], coord[1], coord[2])
-                else:
-                    # For additional points, we need to create curve nodes
-                    break
-            
-            # Set line properties
-            display_node = line_node.GetDisplayNode()
-            if display_node:
-                # Color based on trajectory quality
-                n_contacts = trajectory.get('electrode_count', 0)
-                if n_contacts >= 8:
-                    display_node.SetColor(0.0, 1.0, 0.0)  # Green for good trajectories
-                elif n_contacts >= 5:
-                    display_node.SetColor(1.0, 0.5, 0.0)  # Orange for medium
-                else:
-                    display_node.SetColor(1.0, 0.0, 0.0)  # Red for poor
-                
-                display_node.SetLineThickness(3.0)
-                display_node.SetOpacity(0.8)
-            
-            line_nodes.append(line_node)
-            logging.info(f"Created trajectory line for cluster {cluster_id} with {len(cluster_coords)} points")
-        
-        return line_nodes
-        
-    except Exception as e:
-        logging.error(f"Error creating trajectory lines: {e}")
-        return []
+
 
 
 #
@@ -1140,117 +1146,25 @@ class ConfidenceThresholdWidget:
 
 ### TRAJECTORY ANALYSIS FUNCTIONS ###
     def parseTrajectoryIds(self):
-        """Parse trajectory IDs from the input field."""
+        """Parse trajectory IDs from input field - handles integers and R_type strings."""
         trajectory_ids = None
         if hasattr(self.ui, 'trajectoryIdsLineEdit'):
             ids_text = self.ui.trajectoryIdsLineEdit.text.strip()
             if ids_text:
                 try:
-                    trajectory_ids = [int(x.strip()) for x in ids_text.split(',')]
+                    trajectory_ids = []
+                    for x in ids_text.split(','):
+                        x = x.strip()
+                        if x.startswith('R'):
+                            trajectory_ids.append(x)  # Keep as string (R1_3, R2_3, etc.)
+                        else:
+                            trajectory_ids.append(int(x))  # Convert to int
                     print(f"Parsed trajectory IDs: {trajectory_ids}")
                 except ValueError:
-                    slicer.util.warningDisplay("Invalid trajectory IDs format. Please use format: 0,1,2")
+                    slicer.util.warningDisplay("Invalid format. Use: 0,1,R1_3,R2_3")
                     return None
         return trajectory_ids
 
-    def createBlueTrajectoryLines(self, trajectory_results, markup_node, coords_array, requested_ids):
-        """
-        Create blue trajectory lines in 3D Slicer for specified trajectory IDs.
-        
-        Args:
-            trajectory_results: Results from trajectory analysis
-            markup_node: Original markup node with points
-            coords_array: Array of coordinates
-            requested_ids: List of trajectory IDs to create lines for
-        
-        Returns:
-            list: Created trajectory line nodes
-        """
-        try:
-            line_nodes = []
-            
-            if 'graph' not in trajectory_results:
-                logging.warning("No graph data in trajectory results")
-                return line_nodes
-            
-            # Get cluster assignments for each point
-            clusters = np.array([node[1]['dbscan_cluster'] for node in trajectory_results['graph'].nodes(data=True)])
-            
-            # Create lines only for requested trajectory IDs
-            for trajectory in trajectory_results['trajectories']:
-                cluster_id = trajectory['cluster_id']
-                
-                # Skip if this trajectory ID was not requested
-                if cluster_id not in requested_ids:
-                    continue
-                
-                # Find points belonging to this trajectory
-                cluster_mask = clusters == cluster_id
-                cluster_indices = np.where(cluster_mask)[0]
-                
-                if len(cluster_indices) < 2:
-                    logging.warning(f"Trajectory {cluster_id} has less than 2 points, skipping line creation")
-                    continue
-                
-                # Get coordinates and sort along trajectory direction
-                cluster_coords = coords_array[cluster_indices]
-                
-                # Sort points along the trajectory direction if available
-                if 'direction' in trajectory and len(cluster_coords) > 2:
-                    direction = np.array(trajectory['direction'])
-                    center = np.mean(cluster_coords, axis=0)
-                    projected = np.dot(cluster_coords - center, direction)
-                    sorted_indices = np.argsort(projected)
-                    cluster_coords = cluster_coords[sorted_indices]
-                
-                # Create curve markup node for complex trajectories
-                if len(cluster_coords) > 2:
-                    curve_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsCurveNode", 
-                                                                f"Trajectory_Line_{cluster_id}")
-                    
-                    # Add all points to the curve
-                    for i, coord in enumerate(cluster_coords):
-                        curve_node.AddControlPoint(coord[0], coord[1], coord[2])
-                    
-                    # Set curve properties
-                    curve_node.SetCurveTypeToLinear()  # Linear interpolation between points
-                    
-                    # Set blue color
-                    display_node = curve_node.GetDisplayNode()
-                    if display_node:
-                        display_node.SetColor(0.0, 0.0, 1.0)  # Blue color (RGB)
-                        display_node.SetLineThickness(3.0)
-                        display_node.SetOpacity(1.0)
-                        display_node.SetTextScale(0)  # Hide labels
-                    
-                    line_nodes.append(curve_node)
-                    logging.info(f"Created blue trajectory curve for cluster {cluster_id} with {len(cluster_coords)} points")
-                
-                else:
-                    # For 2-point trajectories, use line markup
-                    line_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsLineNode", 
-                                                                f"Trajectory_Line_{cluster_id}")
-                    
-                    # Add start and end points
-                    line_node.SetNthControlPointPosition(0, cluster_coords[0][0], cluster_coords[0][1], cluster_coords[0][2])
-                    line_node.SetNthControlPointPosition(1, cluster_coords[1][0], cluster_coords[1][1], cluster_coords[1][2])
-                    
-                    # Set blue color
-                    display_node = line_node.GetDisplayNode()
-                    if display_node:
-                        display_node.SetColor(0.0, 0.0, 1.0)  # Blue color (RGB)
-                        display_node.SetLineThickness(3.0)
-                        display_node.SetOpacity(1.0)
-                        display_node.SetTextScale(0)  # Hide labels
-                    
-                    line_nodes.append(line_node)
-                    logging.info(f"Created blue trajectory line for cluster {cluster_id} with 2 points")
-            
-            return line_nodes
-            
-        except Exception as e:
-            logging.error(f"Error creating blue trajectory lines: {e}")
-            return []
 
 #
 # SEEG_maskingWidget - Pure Direct UI Access
@@ -1666,17 +1580,41 @@ class SEEG_ElectrodeLocalizationWidget(ScriptedLoadableModuleWidget, VTKObservat
                 return
             
             # === GENERATE ENHANCED CT VOLUMES ===
+            enhanced_volumes = None  # Initialize properly
             try:
                 from Threshold_mask.ctp_enhancer import CTPEnhancer
                 
+                # CHECK IF RESAMPLING IS NEEDED
+                brain_mask_array = slicer.util.arrayFromVolume(self.outputVolumeNode)
+                ct_array = slicer.util.arrayFromVolume(input_volume_node_CT)
+                
+                if brain_mask_array.shape != ct_array.shape:
+                    logging.info(f"Shape mismatch detected - Brain mask: {brain_mask_array.shape}, CT: {ct_array.shape}")
+                    logging.info("Resampling brain mask to match CT volume...")
+                    
+                    # Use our resampling helper function
+                    resampled_brain_mask = resample_brain_mask_to_ct(self.outputVolumeNode, input_volume_node_CT)
+                    brain_mask_for_enhancement = resampled_brain_mask
+                    
+                    logging.info("✅ Brain mask resampled successfully")
+                else:
+                    logging.info("Shapes already match - no resampling needed")
+                    brain_mask_for_enhancement = self.outputVolumeNode
+                
+                # Now run enhancement with properly sized brain mask
                 ctp_enhancer = CTPEnhancer()
                 
                 enhanced_volumes = ctp_enhancer.enhance_ctp(
                     inputVolume=input_volume_node_CT,
-                    inputROI=self.outputVolumeNode,
+                    inputROI=brain_mask_for_enhancement,  
                     outputDir=enhanced_masks_dir,
                     model_path=MODEL_PATH,
                 )
+                
+                # Clean up temporary resampled node if we created one
+                if 'resampled_brain_mask' in locals() and resampled_brain_mask != self.outputVolumeNode:
+                    slicer.mrmlScene.RemoveNode(resampled_brain_mask)
+                    logging.info("Cleaned up temporary resampled brain mask")
                 
                 if enhanced_volumes and len(enhanced_volumes) > 0:
                     volume_names = list(enhanced_volumes.keys())
@@ -1688,6 +1626,12 @@ class SEEG_ElectrodeLocalizationWidget(ScriptedLoadableModuleWidget, VTKObservat
             except Exception as e:
                 slicer.util.errorDisplay(f"Error during CT enhancement: {str(e)}")
                 logging.error(f"CT enhancement error: {str(e)}")
+                # Clean up on error
+                if 'resampled_brain_mask' in locals() and resampled_brain_mask != self.outputVolumeNode:
+                    try:
+                        slicer.mrmlScene.RemoveNode(resampled_brain_mask)
+                    except:
+                        pass
 
             # === GENERATE GLOBAL MASKS ===
             try:
@@ -1908,6 +1852,8 @@ class SEEG_ElectrodeLocalizationWidget(ScriptedLoadableModuleWidget, VTKObservat
             else:
                 slicer.util.errorDisplay("Processing failed - no enhanced volumes generated.")
 
+
+
 # ---Trajectory (early stages of progress)---------------------------------------------------------------------------
     def onGenerateReportsAndCSV(self):
         """Generate trajectory analysis reports and CSV files."""
@@ -1943,6 +1889,14 @@ class SEEG_ElectrodeLocalizationWidget(ScriptedLoadableModuleWidget, VTKObservat
             if hasattr(self.ui, 'inputSelectorCT') and self.ui.inputSelectorCT.currentNode():
                 volume_name = self.ui.inputSelectorCT.currentNode().GetName()
             
+            # Extract coordinates for debug report
+            coords_list = []
+            for i in range(num_points):
+                pos = [0, 0, 0]
+                markup_node.GetNthControlPointPosition(i, pos)
+                coords_list.append(pos)
+            coords_array = np.array(coords_list)
+            
             # Show progress
             with slicer.util.tryWithErrorDisplay("Failed to generate trajectory reports.", waitCursor=True):
                 
@@ -1953,6 +1907,7 @@ class SEEG_ElectrodeLocalizationWidget(ScriptedLoadableModuleWidget, VTKObservat
                     output_dir=trajectory_dir,
                     volume_name=volume_name
                 )
+                
                 
                 if results['success']:
                     # Count generated files
@@ -1967,6 +1922,369 @@ class SEEG_ElectrodeLocalizationWidget(ScriptedLoadableModuleWidget, VTKObservat
                         generated_files.append("📈 3D visualization plot")
                     if os.path.exists(html_file):
                         generated_files.append("🌐 Interactive HTML report")
+
+                    rejected_count = 0
+
+                    if 'analysis_results' in results and 'rejected_nonlinear' in results['analysis_results']:
+                        rejected_trajectories = results['analysis_results']['rejected_nonlinear']
+                        rejected_count = len(rejected_trajectories)
+                        
+                        if rejected_count > 0:
+                            print(f"Found {rejected_count} rejected trajectories - creating PDF report...")
+
+                        print("Attempting trajectory recovery...")
+                        recovered = recover_rejected_trajectories_with_linear_fit(rejected_trajectories)
+                        
+                        if recovered:
+                            results['analysis_results']['trajectories'].extend(recovered)
+                            results['analysis_results']['n_trajectories'] += len(recovered)
+                            generated_files.append(f"🔧 Recovered {len(recovered)} trajectories")
+                            print(f"Successfully recovered {len(recovered)} trajectories")
+                            
+                            try:
+                                import matplotlib.pyplot as plt
+                                from matplotlib.backends.backend_pdf import PdfPages
+                                import pandas as pd
+
+                                recovery_results = []
+                                for rejected in rejected_trajectories:
+                                    coords = np.array(rejected['coords'])
+                                    cluster_id = rejected['cluster_id']
+                                    
+                                    # Try angle-based recovery
+                                    recovery_result = {
+                                        'original_id': cluster_id,
+                                        'original_coords': coords,
+                                        'original_linearity': rejected['linearity'],
+                                        'recovery_attempts': []
+                                    }
+                                    
+                                    # Attempt 1: Angle-based splitting
+                                    if len(coords) >= 5:
+                                        angles = []
+                                        for i in range(1, len(coords) - 1):
+                                            p1, p2, p3 = coords[i-1], coords[i], coords[i+1]
+                                            v1, v2 = p2 - p1, p3 - p2
+                                            v1_norm = v1 / (np.linalg.norm(v1) + 1e-8)
+                                            v2_norm = v2 / (np.linalg.norm(v2) + 1e-8)
+                                            angle = 180.0 - np.degrees(np.arccos(np.clip(np.dot(v1_norm, v2_norm), -1.0, 1.0)))
+                                            angles.append((i, angle))
+                                        
+                                        break_points = [i for i, angle in angles if angle > 40.0]
+                                        max_angle = max([angle for _, angle in angles]) if angles else 0
+                                        
+                                        angle_attempt = {
+                                            'method': 'angle_splitting',
+                                            'break_points': break_points,
+                                            'max_angle': max_angle,
+                                            'segments': [],
+                                            'success': False
+                                        }
+                                        
+                                        if break_points:
+                                            segments = []
+                                            start_idx = 0
+                                            for break_idx in break_points + [len(coords)]:
+                                                if break_idx - start_idx >= 3:
+                                                    segment = coords[start_idx:break_idx]
+                                                    segments.append(segment)
+                                                start_idx = break_idx
+                                            
+                                            angle_attempt['segments'] = segments
+                                            angle_attempt['success'] = len(segments) >= 2
+                                        
+                                        recovery_result['recovery_attempts'].append(angle_attempt)
+                                    
+                                    # Attempt 2: PCA linear projection
+                                    from sklearn.decomposition import PCA
+                                    pca = PCA(n_components=3)
+                                    pca.fit(coords)
+                                    direction = pca.components_[0]
+                                    center = np.mean(coords, axis=0)
+                                    
+                                    projected_coords = []
+                                    projection_errors = []
+                                    for point in coords:
+                                        vec_to_point = point - center
+                                        projection_distance = np.dot(vec_to_point, direction)
+                                        projected_point = center + projection_distance * direction
+                                        projected_coords.append(projected_point)
+                                        projection_errors.append(np.linalg.norm(point - projected_point))
+                                    
+                                    projected_coords = np.array(projected_coords)
+                                    distances_along_line = [np.dot(point - center, direction) for point in projected_coords]
+                                    sorted_indices = np.argsort(distances_along_line)
+                                    sorted_projected_coords = projected_coords[sorted_indices]
+                                    
+                                    pca_attempt = {
+                                        'method': 'pca_projection',
+                                        'projected_coords': sorted_projected_coords,
+                                        'projection_errors': projection_errors,
+                                        'mean_error': np.mean(projection_errors),
+                                        'max_error': np.max(projection_errors),
+                                        'success': np.mean(projection_errors) < 2.0  # Accept if mean error < 2mm
+                                    }
+                                    recovery_result['recovery_attempts'].append(pca_attempt)
+                                    
+                                    recovery_results.append(recovery_result)
+                                
+                                # Create enhanced PDF report
+                                pdf_path = os.path.join(trajectory_dir, f'rejected_trajectories_report_{volume_name}.pdf')
+                                
+                                with PdfPages(pdf_path) as pdf:
+                                    # Page 1: Summary
+                                    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 8))
+                                    fig.suptitle(f'Rejected Trajectories Report with Recovery Analysis - {volume_name}', fontsize=14, fontweight='bold')
+                                    
+                                    # Summary statistics (enhanced)
+                                    ax1.axis('off')
+                                    successful_recoveries = sum(1 for r in recovery_results 
+                                                            if any(attempt['success'] for attempt in r['recovery_attempts']))
+                                    
+                                    # FIX: Proper indentation for multi-line string
+                                    summary_text = f"""REJECTION & RECOVERY SUMMARY:
+                    - Total rejected trajectories: {rejected_count}
+                    - Linearity threshold: 0.995 (99.5%)
+                    - Total electrode points rejected: {sum(len(r['coords']) for r in rejected_trajectories)}
+                    - Recovery attempts made: {len(recovery_results)}
+                    - Successful recoveries: {successful_recoveries}
+
+                    REJECTION DETAILS:"""
+                                    
+                                    for i, rejected in enumerate(rejected_trajectories, 1):
+                                        coords = np.array(rejected['coords'])
+                                        summary_text += f"""
+                    - Trajectory {rejected['cluster_id']}: {len(coords)} contacts
+                    Linearity: {rejected['linearity']:.6f}
+                    Length: {np.linalg.norm(coords[-1] - coords[0]):.1f}mm"""
+                                    
+                                    ax1.text(0.05, 0.95, summary_text, transform=ax1.transAxes,
+                                            fontsize=10, verticalalignment='top', fontfamily='monospace')
+                                    
+                                    # Linearity histogram
+                                    linearities = [r['linearity'] for r in rejected_trajectories]
+                                    ax2.hist(linearities, bins=max(3, rejected_count//2), alpha=0.7, color='red', edgecolor='black')
+                                    ax2.axvline(x=0.995, color='blue', linestyle='--', linewidth=2, label='Threshold (0.995)')
+                                    ax2.set_xlabel('PCA Linearity Score')
+                                    ax2.set_ylabel('Number of Trajectories')
+                                    ax2.set_title('Distribution of Linearity Scores')
+                                    ax2.legend()
+                                    ax2.grid(True, alpha=0.3)
+                                    
+                                    plt.tight_layout()
+                                    pdf.savefig(fig)
+                                    plt.close(fig)
+                                    
+                                    # Page 2+: Individual trajectory details WITH recovery analysis
+                                    for recovery_result in recovery_results:
+                                        coords = recovery_result['original_coords']
+                                        cluster_id = recovery_result['original_id']
+                                        linearity = recovery_result['original_linearity']
+                                        
+                                        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(11, 8))
+                                        fig.suptitle(f'Rejected Trajectory {cluster_id} - Recovery Analysis', fontsize=12)
+                                        
+                                        # 3D trajectory plot with recovery overlays
+                                        ax1 = plt.subplot(2, 2, 1, projection='3d')
+                                        ax1.scatter(coords[:, 0], coords[:, 1], coords[:, 2], c='red', s=50, label='Original', alpha=0.8)
+                                        ax1.plot(coords[:, 0], coords[:, 1], coords[:, 2], 'r-', alpha=0.6)
+                                        
+                                        # Add PCA projection if available
+                                        for attempt in recovery_result['recovery_attempts']:
+                                            if attempt['method'] == 'pca_projection' and attempt['success']:
+                                                proj_coords = attempt['projected_coords']
+                                                ax1.plot(proj_coords[:, 0], proj_coords[:, 1], proj_coords[:, 2], 'g--', 
+                                                        linewidth=2, label=f"PCA fit (err: {attempt['mean_error']:.1f}mm)")
+                                        
+                                        ax1.set_title(f'{len(coords)} contacts')
+                                        ax1.legend()
+                                        ax1.set_xlabel('X (mm)')
+                                        ax1.set_ylabel('Y (mm)')
+                                        ax1.set_zlabel('Z (mm)')
+                                        
+                                        # Recovery analysis summary
+                                        ax2.axis('off')
+                                        recovery_text = "RECOVERY ANALYSIS:\n\n"
+                                        
+                                        for attempt in recovery_result['recovery_attempts']:
+                                            if attempt['method'] == 'angle_splitting':
+                                                status = "SUCCESS" if attempt['success'] else "FAILED"
+                                                recovery_text += f"Angle Splitting: {status}\n"
+                                                recovery_text += f"  Max angle: {attempt['max_angle']:.1f}°\n"
+                                                recovery_text += f"  Break points: {attempt['break_points']}\n"
+                                                if attempt['success']:
+                                                    recovery_text += f"  Segments: {len(attempt['segments'])}\n"
+                                                recovery_text += "\n"
+                                            
+                                            elif attempt['method'] == 'pca_projection':
+                                                status = "SUCCESS" if attempt['success'] else "FAILED"
+                                                recovery_text += f"PCA Projection: {status}\n"
+                                                recovery_text += f"  Mean error: {attempt['mean_error']:.2f}mm\n"
+                                                recovery_text += f"  Max error: {attempt['max_error']:.2f}mm\n"
+                                                recovery_text += f"  Threshold: <2.0mm\n\n"
+                                        
+                                        ax2.text(0.1, 0.9, recovery_text, transform=ax2.transAxes, 
+                                                fontsize=9, verticalalignment='top', fontfamily='monospace')
+                                        
+                                        # Contact spacing analysis
+                                        if len(coords) > 1:
+                                            spacings = [np.linalg.norm(coords[i+1] - coords[i]) for i in range(len(coords)-1)]
+                                            ax3.plot(range(1, len(spacings)+1), spacings, 'bo-')
+                                            ax3.axhline(y=3.5, color='green', linestyle='--', alpha=0.7, label='Expected (3.5mm)')
+                                            ax3.set_xlabel('Segment')
+                                            ax3.set_ylabel('Spacing (mm)')
+                                            ax3.set_title('Contact Spacing')
+                                            ax3.legend()
+                                            ax3.grid(True, alpha=0.3)
+                                        
+                                        # Rejection details (enhanced) - FIX: Proper indentation
+                                        ax4.axis('off')
+                                        details_text = f"""REJECTION DETAILS:
+                    PCA Linearity: {linearity:.6f}
+                    Required: ≥ 0.995000
+                    Deficit: {0.995 - linearity:.6f}
+
+                    Length: {np.linalg.norm(coords[-1] - coords[0]):.1f} mm
+                    Center: ({np.mean(coords, axis=0)[0]:.1f}, {np.mean(coords, axis=0)[1]:.1f}, {np.mean(coords, axis=0)[2]:.1f})
+
+                    RECOVERY STATUS:
+                    {"✓ Recoverable" if any(attempt['success'] for attempt in recovery_result['recovery_attempts']) else "✗ Not recoverable"}
+
+                    RECOMMENDATION:
+                    {"Use recovered segments" if any(attempt['success'] for attempt in recovery_result['recovery_attempts']) else "Manual review required"}"""
+                                        
+                                        ax4.text(0.1, 0.9, details_text, transform=ax4.transAxes, 
+                                                fontsize=9, verticalalignment='top', fontfamily='monospace')
+                                        
+                                        plt.tight_layout()
+                                        pdf.savefig(fig)
+                                        plt.close(fig)
+
+                                    if any(attempt['success'] and attempt['method'] == 'angle_splitting' 
+                                        for r in recovery_results for attempt in r['recovery_attempts']):
+                                        
+                                        for recovery_result in recovery_results:
+                                            # Only create recovery visualization page if angle splitting was successful
+                                            angle_attempt = None
+                                            for attempt in recovery_result['recovery_attempts']:
+                                                if attempt['method'] == 'angle_splitting' and attempt['success']:
+                                                    angle_attempt = attempt
+                                                    break
+                                            
+                                            if angle_attempt and 'segments' in angle_attempt:
+                                                coords = recovery_result['original_coords']
+                                                cluster_id = recovery_result['original_id']
+                                                segments = angle_attempt['segments']
+                                                
+                                                fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(11, 8))
+                                                fig.suptitle(f'Recovered Segments from Trajectory {cluster_id}', fontsize=12)
+                                                
+                                                # 3D plot with color-coded segments
+                                                ax1 = plt.subplot(2, 2, 1, projection='3d')
+                                                colors = ['blue', 'green', 'orange', 'purple', 'brown']
+                                                
+                                                # Plot original trajectory in red (faded)
+                                                ax1.scatter(coords[:, 0], coords[:, 1], coords[:, 2], 
+                                                        c='red', s=30, alpha=0.3, label='Original')
+                                                ax1.plot(coords[:, 0], coords[:, 1], coords[:, 2], 'r-', alpha=0.2)
+                                                
+                                                # Plot recovered segments in different colors
+                                                for i, segment in enumerate(segments):
+                                                    color = colors[i % len(colors)]
+                                                    ax1.scatter(segment[:, 0], segment[:, 1], segment[:, 2], 
+                                                            c=color, s=60, label=f'Segment {i+1} ({len(segment)}pts)')
+                                                    ax1.plot(segment[:, 0], segment[:, 1], segment[:, 2], 
+                                                            color=color, linewidth=3, alpha=0.8)
+                                                
+                                                ax1.set_title('Recovered Electrode Segments')
+                                                ax1.legend()
+                                                ax1.set_xlabel('X (mm)')
+                                                ax1.set_ylabel('Y (mm)')
+                                                ax1.set_zlabel('Z (mm)')
+                                                
+                                                # Segment properties table
+                                                ax2.axis('off')
+                                                segment_text = "RECOVERED SEGMENTS:\n\n"
+                                                for i, segment in enumerate(segments):
+                                                    length = np.linalg.norm(segment[-1] - segment[0]) if len(segment) > 1 else 0
+                                                    # Calculate linearity for each segment
+                                                    if len(segment) > 2:
+                                                        from sklearn.decomposition import PCA
+                                                        pca = PCA(n_components=3)
+                                                        pca.fit(segment)
+                                                        segment_linearity = pca.explained_variance_ratio_[0]
+                                                    else:
+                                                        segment_linearity = 1.0
+                                                    
+                                                    segment_text += f"Segment {i+1}:\n"
+                                                    segment_text += f"  Contacts: {len(segment)}\n"
+                                                    segment_text += f"  Length: {length:.1f}mm\n"
+                                                    segment_text += f"  Linearity: {segment_linearity:.4f}\n"
+                                                    segment_text += f"  Start: ({segment[0][0]:.1f}, {segment[0][1]:.1f}, {segment[0][2]:.1f})\n"
+                                                    segment_text += f"  End: ({segment[-1][0]:.1f}, {segment[-1][1]:.1f}, {segment[-1][2]:.1f})\n\n"
+                                                
+                                                ax2.text(0.1, 0.9, segment_text, transform=ax2.transAxes,
+                                                        fontsize=9, verticalalignment='top', fontfamily='monospace')
+                                                
+                                                # Spacing analysis for each segment
+                                                ax3.set_title('Segment Spacing Analysis')
+                                                for i, segment in enumerate(segments):
+                                                    if len(segment) > 1:
+                                                        spacings = [np.linalg.norm(segment[j+1] - segment[j]) 
+                                                                for j in range(len(segment)-1)]
+                                                        color = colors[i % len(colors)]
+                                                        ax3.plot(range(len(spacings)), spacings, 'o-', 
+                                                                color=color, label=f'Segment {i+1}')
+                                                
+                                                ax3.axhline(y=3.5, color='gray', linestyle='--', alpha=0.7, label='Expected (3.5mm)')
+                                                ax3.set_xlabel('Contact Pair')
+                                                ax3.set_ylabel('Spacing (mm)')
+                                                ax3.legend()
+                                                ax3.grid(True, alpha=0.3)
+                                                
+                                                # Recovery summary
+                                                ax4.axis('off')
+                                                break_points = angle_attempt['break_points']
+                                                max_angle = angle_attempt['max_angle']
+                                                
+                                                summary_text = f"""RECOVERY SUMMARY:
+                                    Original trajectory: {len(coords)} contacts
+                                    Break points: {break_points}
+                                    Max curvature angle: {max_angle:.1f}°
+
+                                    Segments created: {len(segments)}
+                                    Total recovered contacts: {sum(len(s) for s in segments)}
+
+                                    SEGMENT VALIDATION:
+                                    """
+                                                
+                                                valid_segments = 0
+                                                for i, segment in enumerate(segments):
+                                                    if len(segment) >= 5:  # Minimum for valid electrode
+                                                        valid_segments += 1
+                                                        segment_text += f"Segment {i+1}: VALID\n"
+                                                    else:
+                                                        segment_text += f"Segment {i+1}: TOO SHORT\n"
+                                                
+                                                summary_text += f"Valid electrodes: {valid_segments}/{len(segments)}\n"
+                                                summary_text += f"Recovery success: {'YES' if valid_segments >= 1 else 'NO'}"
+                                                
+                                                ax4.text(0.1, 0.9, summary_text, transform=ax4.transAxes,
+                                                        fontsize=10, verticalalignment='top', fontfamily='monospace')
+                                                
+                                                plt.tight_layout()
+                                                pdf.savefig(fig)
+                                                plt.close(fig)
+
+                                    # Continue with PDF closing
+                                    generated_files.append("📄 Enhanced rejected trajectories PDF report with recovery segments visualization")
+                                
+                                generated_files.append("📄 Enhanced rejected trajectories PDF report with recovery analysis")
+                                print(f"Enhanced PDF report with recovery analysis saved: {pdf_path}")
+                                
+                            except Exception as e:
+                                print(f"Could not create enhanced rejected trajectories report: {e}")
+                             
                     
                     # Show success message
                     success_msg = f"""✅ Trajectory Reports Generated Successfully!
@@ -2118,24 +2436,13 @@ class SEEG_ElectrodeLocalizationWidget(ScriptedLoadableModuleWidget, VTKObservat
                 if cluster_id not in requested_ids:
                     continue
                 
-                # Find points belonging to this trajectory
-                cluster_mask = clusters == cluster_id
-                cluster_indices = np.where(cluster_mask)[0]
-                
-                if len(cluster_indices) < 2:
-                    logging.warning(f"Trajectory {cluster_id} has less than 2 points, skipping line creation")
-                    continue
                 
                 # Get coordinates and sort along trajectory direction
-                cluster_coords = coords_array[cluster_indices]
-                
-                # Sort points along the trajectory direction if available
-                if 'direction' in trajectory and len(cluster_coords) > 2:
-                    direction = np.array(trajectory['direction'])
-                    center = np.mean(cluster_coords, axis=0)
-                    projected = np.dot(cluster_coords - center, direction)
-                    sorted_indices = np.argsort(projected)
-                    cluster_coords = cluster_coords[sorted_indices]
+                cluster_coords = get_trajectory_coordinates(cluster_id, trajectory_results, coords_array, clusters)
+    
+                if cluster_coords is None or len(cluster_coords) < 2:
+                    logging.warning(f"Trajectory {cluster_id} has less than 2 points, skipping line creation")
+                    continue    
                 
                 # Create curve markup node for complex trajectories
                 if len(cluster_coords) > 2:
@@ -2185,6 +2492,10 @@ class SEEG_ElectrodeLocalizationWidget(ScriptedLoadableModuleWidget, VTKObservat
         except Exception as e:
             logging.error(f"Error creating trajectory lines: {e}")
             return []
+        
+
+        
+
 
 #
 # SEEG_ElectrodeLocalizationLogic

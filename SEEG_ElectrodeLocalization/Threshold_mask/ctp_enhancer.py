@@ -59,6 +59,9 @@ import joblib
 from sklearn.preprocessing import StandardScaler
 import time
 
+
+
+
 def shannon_entropy(image):
     """Calculate Shannon entropy of an image."""
     import numpy as np
@@ -743,7 +746,75 @@ class CTPEnhancer:
             
             if closed_roi.shape != volume_array.shape:
                 print("🔄 Shapes don't match. Using spacing/origin-aware resampling...")
-                final_roi = closed_roi
+                print(f"Volume shape: {volume_array.shape}, ROI shape: {closed_roi.shape}")
+                
+                try:
+                    # Verify inputs exist
+                    if not inputROI or not inputVolume:
+                        raise ValueError("Input ROI or Volume node is invalid")
+                    
+                    # Create temporary node for closed ROI (same as your working script)
+                    temp_roi_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode", "temp_roi_for_resampling")
+                    temp_roi_node.SetOrigin(inputROI.GetOrigin())
+                    temp_roi_node.SetSpacing(inputROI.GetSpacing())
+                    ijkToRasMatrix = vtk.vtkMatrix4x4()
+                    inputROI.GetIJKToRASMatrix(ijkToRasMatrix)
+                    temp_roi_node.SetIJKToRASMatrix(ijkToRasMatrix)
+                    slicer.util.updateVolumeFromArray(temp_roi_node, closed_roi)
+                    
+                    # Create output node (same as your working script)
+                    resampled_roi_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode", "resampled_roi")
+                    
+                    # Get reference volume IJK to RAS matrix (from your working script)
+                    reference_ijk_to_ras_matrix = vtk.vtkMatrix4x4()
+                    inputVolume.GetIJKToRASMatrix(reference_ijk_to_ras_matrix)
+                    
+                    # Resampling parameters (exactly like your working script)
+                    parameters = {
+                        "inputVolume": temp_roi_node,
+                        "referenceVolume": inputVolume,
+                        "outputVolume": resampled_roi_node,
+                        "interpolationMode": "NearestNeighbor"
+                    }
+                    
+                    # Run resampling (exactly like your working script)
+                    result = slicer.cli.runSync(slicer.modules.resamplescalarvectordwivolume, None, parameters)
+                    
+                    # CRITICAL: Set the matrix (this was missing!)
+                    resampled_roi_node.SetIJKToRASMatrix(reference_ijk_to_ras_matrix)
+                    
+                    # Get resampled array
+                    final_roi = slicer.util.arrayFromVolume(resampled_roi_node)
+                    if final_roi is None:
+                        raise RuntimeError("Failed to get resampled array")
+                    
+                    final_roi = (final_roi > 0.5).astype(np.uint8)
+                    
+                    # Verify success
+                    if final_roi.shape != volume_array.shape:
+                        raise RuntimeError(f"Resampling failed - shapes still don't match: {final_roi.shape} vs {volume_array.shape}")
+                    
+                    print(f"Resampling successful: {final_roi.shape}")
+                    
+                    # Clean up temporary nodes
+                    slicer.mrmlScene.RemoveNode(temp_roi_node)
+                    slicer.mrmlScene.RemoveNode(resampled_roi_node)
+                    
+                except Exception as e:
+                    print(f"Resampling failed: {e}")
+                    # Clean up nodes if they exist
+                    try:
+                        if 'temp_roi_node' in locals():
+                            slicer.mrmlScene.RemoveNode(temp_roi_node)
+                        if 'resampled_roi_node' in locals():
+                            slicer.mrmlScene.RemoveNode(resampled_roi_node)
+                    except:
+                        pass
+                    
+                    # Fallback to original ROI (will cause broadcast error, but at least we know why)
+                    final_roi = closed_roi
+                    print("Using original ROI - expect broadcast error")
+                    
             else:
                 final_roi = closed_roi
                 print("No resizing needed: ROI already has the same shape as volume.")

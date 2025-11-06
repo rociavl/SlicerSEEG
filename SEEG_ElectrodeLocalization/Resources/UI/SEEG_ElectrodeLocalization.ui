@@ -6,148 +6,148 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>541</width>
-    <height>772</height>
+    <width>469</width>
+    <height>856</height>
    </rect>
   </property>
   <property name="autoFillBackground">
    <bool>false</bool>
   </property>
   <layout class="QGridLayout" name="gridLayout">
-   <item row="3" column="0">
-    <widget class="ctkCollapsibleButton" name="inputsCollapsibleButton">
-     <property name="text">
-      <string>1. Mask Creation</string>
+   <property name="leftMargin">
+    <number>8</number>
+   </property>
+   <property name="topMargin">
+    <number>8</number>
+   </property>
+   <property name="rightMargin">
+    <number>8</number>
+   </property>
+   <property name="bottomMargin">
+    <number>8</number>
+   </property>
+   <property name="spacing">
+    <number>5</number>
+   </property>
+   <item row="5" column="0">
+    <widget class="ctkCollapsibleButton" name="CollapsibleButton">
+     <property name="enabled">
+      <bool>true</bool>
      </property>
-     <layout class="QGridLayout" name="gridLayout_3">
-      <item row="0" column="0">
-       <widget class="QLabel" name="label">
-        <property name="text">
-         <string>Input volume (if you have norm/brain scan): </string>
-        </property>
-       </widget>
-      </item>
-      <item row="0" column="1">
-       <widget class="qMRMLNodeComboBox" name="inputSelector">
+     <property name="text">
+      <string>Trajectory analysis (optional/early stages)</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_6">
+      <item row="4" column="0">
+       <widget class="qMRMLNodeComboBox" name="markupSelector">
         <property name="enabled">
          <bool>true</bool>
-        </property>
-        <property name="toolTip">
-         <string>Pick the input to the algorithm.</string>
         </property>
         <property name="nodeTypes">
          <stringlist notr="true">
-          <string>vtkMRMLScalarVolumeNode</string>
+          <string>vtkMRMLMarkupsFiducialNode</string>
          </stringlist>
-        </property>
-        <property name="showChildNodeTypes">
-         <bool>false</bool>
-        </property>
-        <property name="addEnabled">
-         <bool>false</bool>
-        </property>
-        <property name="removeEnabled">
-         <bool>false</bool>
-        </property>
-        <property name="SlicerParameterName" stdset="0">
-         <string>inputVolume</string>
-        </property>
-       </widget>
-      </item>
-      <item row="3" column="0">
-       <widget class="QLabel" name="label_3">
-        <property name="text">
-         <string>Input volume (CTP)</string>
-        </property>
-       </widget>
-      </item>
-      <item row="3" column="1">
-       <widget class="qMRMLNodeComboBox" name="inputSelectorCT">
-        <property name="enabled">
-         <bool>true</bool>
-        </property>
-        <property name="nodeTypes">
-         <stringlist notr="true"/>
-        </property>
-        <property name="showHidden">
-         <bool>true</bool>
         </property>
         <property name="hideChildNodeTypes">
          <stringlist notr="true"/>
         </property>
-        <property name="editEnabled">
-         <bool>false</bool>
-        </property>
         <property name="interactionNodeSingletonTag">
          <string notr="true"/>
         </property>
-        <property name="selectNodeUponCreation">
-         <bool>true</bool>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QLabel" name="label_8">
+        <property name="text">
+         <string>Select electrode markups:</string>
         </property>
        </widget>
       </item>
-      <item row="4" column="0" colspan="2">
-       <widget class="QPushButton" name="applyButton">
-        <property name="enabled">
-         <bool>true</bool>
-        </property>
-        <property name="toolTip">
-         <string>Run the algorithm.</string>
-        </property>
+      <item row="6" column="0">
+       <widget class="QLabel" name="label_7">
         <property name="text">
-         <string>✅ Apply Masking Norm (the electrodes are gonna be here)</string>
-        </property>
-        <property name="checkable">
-         <bool>false</bool>
+         <string>Trajectory IDs :</string>
         </property>
        </widget>
       </item>
-      <item row="1" column="1">
-       <widget class="QCheckBox" name="checkBox">
+      <item row="1" column="0">
+       <widget class="QLabel" name="label_10">
         <property name="text">
-         <string>Input is already a binary brain mask</string>
+         <string>Results may vary and should be validated carefully.</string>
         </property>
-        <property name="checked">
-         <bool>false</bool>
+       </widget>
+      </item>
+      <item row="0" column="0">
+       <widget class="QLabel" name="label_9">
+        <property name="text">
+         <string>⚠️ In Development - Very Early Stages</string>
+        </property>
+       </widget>
+      </item>
+      <item row="9" column="0">
+       <widget class="QPushButton" name="createTrajectoryLinesButton">
+        <property name="text">
+         <string>Create Trajectory Lines</string>
+        </property>
+       </widget>
+      </item>
+      <item row="5" column="0">
+       <widget class="QPushButton" name="generateReportsAndCSVButton">
+        <property name="text">
+         <string>Generate Reports and CSV</string>
+        </property>
+       </widget>
+      </item>
+      <item row="7" column="0">
+       <widget class="QLineEdit" name="trajectoryIdsLineEdit">
+        <property name="text">
+         <string/>
+        </property>
+        <property name="placeholderText">
+         <string>comma-separated, e.g., 0,1,2</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="Line" name="line">
+        <property name="orientation">
+         <enum>Qt::Horizontal</enum>
         </property>
        </widget>
       </item>
      </layout>
     </widget>
    </item>
-   <item row="5" column="0">
-    <widget class="ctkCollapsibleButton" name="CollapsibleButton_2">
-     <property name="text">
-      <string>3. Mask creation if your scan has mores tissues apart from the brain 💀</string>
+   <item row="1" column="0">
+    <widget class="ctkCollapsibleButton" name="brainMaskCollapsibleButton">
+     <property name="enabled">
+      <bool>true</bool>
      </property>
-     <layout class="QGridLayout" name="gridLayout_2">
-      <item row="1" column="0" colspan="2">
-       <widget class="QPushButton" name="newButton_save">
+     <property name="text">
+      <string>Brain Mask Generation with Deep Learning (Optional)</string>
+     </property>
+     <property name="collapsed">
+      <bool>true</bool>
+     </property>
+     <layout class="QVBoxLayout" name="verticalLayout">
+      <item>
+       <widget class="QLabel" name="brainMaskInfoLabel">
         <property name="text">
-         <string>Create Mask and save it :D</string>
+         <string>If you only have a post-operative CT scan, generate a brain mask first:</string>
         </property>
        </widget>
       </item>
-      <item row="0" column="0" alignment="Qt::AlignLeft">
-       <widget class="QLabel" name="label_2">
+      <item>
+       <widget class="QPushButton" name="huggingFaceLinkButton">
         <property name="text">
-         <string>Input Volume: </string>
+         <string>🌐 Generate Brain Mask Online</string>
         </property>
        </widget>
       </item>
-      <item row="0" column="1">
-       <widget class="qMRMLNodeComboBox" name="inputSelector_saveMaskAI">
-        <property name="enabled">
-         <bool>true</bool>
-        </property>
-        <property name="nodeTypes">
-         <stringlist notr="true"/>
-        </property>
-        <property name="hideChildNodeTypes">
-         <stringlist notr="true"/>
-        </property>
-        <property name="interactionNodeSingletonTag">
-         <string notr="true"/>
+      <item>
+       <widget class="QLabel" name="instructionLabel">
+        <property name="text">
+         <string>Upload your CT scan → Download the brain mask → Load it as MRI input above</string>
         </property>
        </widget>
       </item>
@@ -197,7 +197,7 @@
       <bool>true</bool>
      </property>
      <property name="text">
-      <string>Electrode Confidence Viewer</string>
+      <string>2. Electrode Confidence Viewer</string>
      </property>
      <property name="collapsed">
       <bool>false</bool>
@@ -267,6 +267,122 @@
      </layout>
     </widget>
    </item>
+   <item row="3" column="0">
+    <widget class="ctkCollapsibleButton" name="inputsCollapsibleButton">
+     <property name="sizePolicy">
+      <sizepolicy hsizetype="Minimum" vsizetype="Preferred">
+       <horstretch>0</horstretch>
+       <verstretch>0</verstretch>
+      </sizepolicy>
+     </property>
+     <property name="autoFillBackground">
+      <bool>true</bool>
+     </property>
+     <property name="text">
+      <string>1. Mask Creation</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_3" rowstretch="0,0,0,0,0" columnstretch="0,0">
+      <property name="sizeConstraint">
+       <enum>QLayout::SetDefaultConstraint</enum>
+      </property>
+      <property name="verticalSpacing">
+       <number>7</number>
+      </property>
+      <item row="0" column="0">
+       <widget class="QLabel" name="label">
+        <property name="text">
+         <string>Input volume (norm/brain scan): </string>
+        </property>
+       </widget>
+      </item>
+      <item row="4" column="0" colspan="2">
+       <widget class="QPushButton" name="applyButton">
+        <property name="enabled">
+         <bool>true</bool>
+        </property>
+        <property name="toolTip">
+         <string>Run the algorithm.</string>
+        </property>
+        <property name="text">
+         <string>✅ Apply Masking Norm (the electrodes are gonna be here)</string>
+        </property>
+        <property name="checkable">
+         <bool>false</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QLabel" name="label_3">
+        <property name="text">
+         <string>Input volume (CTP)</string>
+        </property>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="qMRMLNodeComboBox" name="inputSelector">
+        <property name="enabled">
+         <bool>true</bool>
+        </property>
+        <property name="toolTip">
+         <string>Pick the input to the algorithm.</string>
+        </property>
+        <property name="nodeTypes">
+         <stringlist notr="true">
+          <string>vtkMRMLScalarVolumeNode</string>
+         </stringlist>
+        </property>
+        <property name="showChildNodeTypes">
+         <bool>false</bool>
+        </property>
+        <property name="addEnabled">
+         <bool>false</bool>
+        </property>
+        <property name="removeEnabled">
+         <bool>false</bool>
+        </property>
+        <property name="SlicerParameterName" stdset="0">
+         <string>inputVolume</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QCheckBox" name="checkBox">
+        <property name="text">
+         <string>Input is already a binary brain mask</string>
+        </property>
+        <property name="checked">
+         <bool>false</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="1">
+       <widget class="qMRMLNodeComboBox" name="inputSelectorCT">
+        <property name="enabled">
+         <bool>true</bool>
+        </property>
+        <property name="nodeTypes">
+         <stringlist notr="true"/>
+        </property>
+        <property name="showHidden">
+         <bool>true</bool>
+        </property>
+        <property name="hideChildNodeTypes">
+         <stringlist notr="true"/>
+        </property>
+        <property name="editEnabled">
+         <bool>false</bool>
+        </property>
+        <property name="interactionNodeSingletonTag">
+         <string notr="true"/>
+        </property>
+        <property name="selectNodeUponCreation">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
   </layout>
  </widget>
  <customwidgets>
@@ -301,8 +417,8 @@
      <y>132</y>
     </hint>
     <hint type="destinationlabel">
-     <x>534</x>
-     <y>71</y>
+     <x>364</x>
+     <y>157</y>
     </hint>
    </hints>
   </connection>
