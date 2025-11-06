@@ -41,7 +41,60 @@ if centroids_pipeline_dir not in sys.path:
 
 from centroids_feature_extraction import extract_all_target_features
 
+# TRAJECTORY PART
+# === ADD THIS NEW SECTION FOR TRAJECTORY ANALYSIS ===
+electrode_path_dir = os.path.join(module_dir, "Electrode_path")
+if electrode_path_dir not in sys.path:
+    sys.path.append(electrode_path_dir)
 
+# Import trajectory analysis functions
+try:
+    from test_slicer import (
+        integrated_trajectory_analysis,
+        calculate_trajectory_scores,
+        create_interactive_annotation_report,
+        create_basic_3d_plot,
+        analyze_both_hemispheres_separately,
+        apply_hemisphere_splitting_to_results,
+        adaptive_clustering_parameters
+    )
+    TRAJECTORY_ANALYSIS_AVAILABLE = True
+    print("✅ Trajectory analysis module loaded successfully")
+except ImportError as e:
+    print(f"⚠️ Trajectory analysis module not available: {e}")
+    TRAJECTORY_ANALYSIS_AVAILABLE = False
+ 
+ ###--Bilateral detection and splitting function--###
+def detect_and_split_bilateral_electrodes(electrode_coords, min_per_hemisphere=2):
+    """
+    Simple bilateral detection and splitting function.
+    Returns: (is_bilateral, left_coords, right_coords, hemisphere_info)
+    """
+    if len(electrode_coords) == 0:
+        return False, None, None, {}
+    
+    # Split by RAS X coordinate (left = x<0, right = x>0)
+    left_mask = electrode_coords[:, 0] < 0
+    right_mask = electrode_coords[:, 0] > 0
+    
+    left_coords = electrode_coords[left_mask]
+    right_coords = electrode_coords[right_mask]
+    
+    is_bilateral = (len(left_coords) >= min_per_hemisphere and 
+                   len(right_coords) >= min_per_hemisphere)
+    
+    hemisphere_info = {
+        'total_electrodes': len(electrode_coords),
+        'left_count': len(left_coords),
+        'right_count': len(right_coords),
+        'is_bilateral': is_bilateral,
+        'processing_mode': 'bilateral' if is_bilateral else 'unified'
+    }
+    
+    logging.info(f"Electrode distribution: {len(left_coords)} left, {len(right_coords)} right. "
+                f"Mode: {'bilateral' if is_bilateral else 'unified'}")
+    
+    return is_bilateral, left_coords, right_coords, hemisphere_info
 
 # Define path to the model
 MODEL_PATH = os.path.join(module_dir, "models", "random_forest_modelP1.joblib")
@@ -228,14 +281,19 @@ def run_embedded_confidence_analysis(brain_mask_file, top_mask_file, enhanced_ct
         raise ImportError("Confidence analysis dependencies not available")
     
     try:
-        # Step 1: Extract centroids from top mask (using your existing helper methods)
+        # Extract centroids from top mask 
         logging.info("📍 Step 1: Extracting centroids...")
         electrode_coords = extract_centroids_from_mask(top_mask_file)
+            # ADD THESE 3 LINES:
+        is_bilateral, left_coords, right_coords, hemi_info = detect_and_split_bilateral_electrodes(electrode_coords)
+        if is_bilateral:
+            logging.info(f"Bilateral configuration detected: processing {hemi_info['left_count']} left + {hemi_info['right_count']} right electrodes")
+    
         
         if len(electrode_coords) == 0:
             raise ValueError("No electrode centroids found in mask")
         
-        # Step 2: Create temporary CSV for your feature extraction function
+        #  temporary CSV for the feature extraction function
         logging.info("🔬 Step 2: Creating temporary electrode CSV...")
         temp_csv_file = os.path.join(confidence_dir, "temp_electrode_coords.csv")
         temp_df = pd.DataFrame({
@@ -247,7 +305,7 @@ def run_embedded_confidence_analysis(brain_mask_file, top_mask_file, enhanced_ct
         })
         temp_df.to_csv(temp_csv_file, index=False)
         
-        # Step 3: Use your existing feature extraction function
+        # feature extraction function
         logging.info("🔬 Step 3: Running your feature extraction function...")
         
         
@@ -263,7 +321,7 @@ def run_embedded_confidence_analysis(brain_mask_file, top_mask_file, enhanced_ct
         features_csv = os.path.join(confidence_dir, f"target_features_{volume_name}_top_mask_1.csv")
         logging.info(f"✅ Features saved to: {features_csv}")
         
-        # Step 4: Run prediction using your working model code
+        # Step 4
         logging.info("🤖 Step 4: Running prediction with your working model...")
         predictions_csv = os.path.join(confidence_dir, f"confidence_predictions_{volume_name}.csv")
         
@@ -490,7 +548,390 @@ def embedded_predict_electrode_confidence(feature_csv_path, model_path, patient_
         print(f"Error during prediction: {str(e)}")
         raise
 
+# === TRAJECTORY ANALYSIS FUNCTIONS ===
 
+def run_trajectory_analysis_on_markups(markup_node, trajectory_ids=None, output_dir=None, volume_name="analysis"):
+    """
+    Run trajectory analysis on selected markup points with bilateral support.
+    
+    Args:
+        markup_node: vtkMRMLMarkupsFiducialNode with electrode points
+        trajectory_ids: List of trajectory IDs to analyze (None = analyze all)
+        output_dir: Directory to save results
+        volume_name: Name for output files
+    
+    Returns:
+        dict: Analysis results
+    """
+    if not TRAJECTORY_ANALYSIS_AVAILABLE:
+        raise ImportError("Trajectory analysis module not available")
+    
+    try:
+        logging.info("🔧 Starting trajectory analysis on selected markups...")
+        
+        # Extract coordinates from markup node
+        coords_list = []
+        point_ids = []
+        
+        num_points = markup_node.GetNumberOfControlPoints()
+        if num_points < 6:
+            return {
+                'success': False,
+                'reason': f'Insufficient points ({num_points}). Need at least 6 for trajectory analysis.',
+                'total_points': num_points
+            }
+        
+        # Get all points from markup
+        for i in range(num_points):
+            pos = [0, 0, 0]
+            markup_node.GetNthControlPointPosition(i, pos)
+            coords_list.append(pos)
+            point_ids.append(i)
+        
+        coords_array = np.array(coords_list)
+        logging.info(f"Extracted {len(coords_array)} electrode coordinates from markup")
+        
+        # Check for bilateral electrode configuration
+        is_bilateral, left_coords, right_coords, hemi_info = detect_and_split_bilateral_electrodes(coords_array)
+        
+        # Choose analysis method based on electrode distribution
+        if is_bilateral:
+            logging.info(f"Bilateral configuration detected: {hemi_info['left_count']} left + {hemi_info['right_count']} right electrodes")
+            logging.info("Using bilateral hemisphere analysis...")
+            
+            # Use bilateral analysis
+            trajectory_results = analyze_both_hemispheres_separately(
+                coords_array=coords_array,
+                entry_points=None,
+                max_neighbor_distance=7.5,
+                min_neighbors=3,
+                expected_spacing_range=(3.0, 5.0),
+                use_adaptive_clustering=False  # Can be made configurable
+            )
+        else:
+            logging.info(f"Unified analysis for {len(coords_array)} electrodes")
+            
+            # Use standard analysis
+            trajectory_results = integrated_trajectory_analysis(
+                coords_array=coords_array,
+                entry_points=None,
+                max_neighbor_distance=7.5,
+                min_neighbors=3,
+                expected_spacing_range=(3.0, 5.0)
+            )
+        
+        if trajectory_results.get('n_trajectories', 0) == 0:
+            return {
+                'success': False,
+                'reason': 'No trajectories detected by clustering algorithm',
+                'analysis_results': trajectory_results,
+                'total_points': num_points,
+                'bilateral_info': hemi_info
+            }
+        
+        # Apply hemisphere splitting if both hemispheres and cross-hemisphere trajectories exist
+        if is_bilateral:
+            trajectory_results = apply_hemisphere_splitting_to_results(
+                trajectory_results, coords_array, hemisphere='both'
+            )
+        
+        # Filter by trajectory IDs if specified
+        if trajectory_ids is not None:
+            original_trajectories = trajectory_results['trajectories']
+            filtered_trajectories = []
+            
+            for traj in original_trajectories:
+                if traj['cluster_id'] in trajectory_ids:
+                    filtered_trajectories.append(traj)
+            
+            trajectory_results['trajectories'] = filtered_trajectories
+            trajectory_results['n_trajectories'] = len(filtered_trajectories)
+            
+            logging.info(f"Filtered to {len(filtered_trajectories)} trajectories with IDs: {trajectory_ids}")
+        
+        if len(trajectory_results['trajectories']) == 0:
+            return {
+                'success': False,
+                'reason': f'No trajectories found with specified IDs: {trajectory_ids}',
+                'available_ids': [t['cluster_id'] for t in original_trajectories],
+                'analysis_results': trajectory_results,
+                'bilateral_info': hemi_info
+            }
+        
+        # Calculate trajectory scores
+        scores_df = calculate_trajectory_scores(
+            trajectory_results['trajectories'], 
+            coords_array, 
+            trajectory_results
+        )
+        
+        # Save results if output directory provided
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Save trajectory analysis
+            trajectory_csv = os.path.join(output_dir, f'trajectory_analysis_{volume_name}.csv')
+            scores_df.to_csv(trajectory_csv, index=False)
+            
+            # Create visualization
+            viz_path = os.path.join(output_dir, f'trajectory_visualization_{volume_name}.png')
+            create_basic_3d_plot(coords_array, trajectory_results, scores_df, viz_path)
+            
+            # Create HTML report
+            html_path = os.path.join(output_dir, f'trajectory_report_{volume_name}.html')
+            create_interactive_annotation_report(scores_df, viz_path, html_path)
+            
+            logging.info(f"Results saved to: {output_dir}")
+        
+        logging.info("✅ Trajectory analysis completed successfully!")
+        
+        return {
+            'success': True,
+            'n_trajectories': trajectory_results['n_trajectories'],
+            'trajectories': trajectory_results['trajectories'],
+            'scores_df': scores_df,
+            'analysis_results': trajectory_results,
+            'total_points': num_points,
+            'trajectory_ids_analyzed': trajectory_ids,
+            'output_dir': output_dir,
+            'bilateral_info': hemi_info,
+            'analysis_method': 'bilateral' if is_bilateral else 'unified'
+        }
+        
+    except Exception as e:
+        logging.error(f"❌ Trajectory analysis failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return {'success': False, 'error': str(e)}
+
+
+def run_enhanced_trajectory_analysis_with_adaptive_clustering(markup_node, trajectory_ids=None, output_dir=None, volume_name="analysis"):
+    """
+    Enhanced trajectory analysis with adaptive clustering and bilateral support.
+    
+    This function automatically determines optimal clustering parameters and uses
+    bilateral analysis when appropriate.
+    """
+    if not TRAJECTORY_ANALYSIS_AVAILABLE:
+        raise ImportError("Trajectory analysis module not available")
+    
+    try:
+        logging.info("🔧 Starting enhanced trajectory analysis with adaptive clustering...")
+        
+        # Extract coordinates
+        coords_list = []
+        num_points = markup_node.GetNumberOfControlPoints()
+        
+        if num_points < 6:
+            return {
+                'success': False,
+                'reason': f'Insufficient points ({num_points}). Need at least 6 for trajectory analysis.',
+                'total_points': num_points
+            }
+        
+        for i in range(num_points):
+            pos = [0, 0, 0]
+            markup_node.GetNthControlPointPosition(i, pos)
+            coords_list.append(pos)
+        
+        coords_array = np.array(coords_list)
+        logging.info(f"Extracted {len(coords_array)} electrode coordinates from markup")
+        
+        # Check for bilateral configuration
+        is_bilateral, left_coords, right_coords, hemi_info = detect_and_split_bilateral_electrodes(coords_array)
+        
+        # Expected contact counts for adaptive clustering
+        expected_contact_counts = [5, 8, 10, 12, 15, 18]
+        
+        if is_bilateral:
+            logging.info(f"Bilateral configuration detected: using hemisphere-separated adaptive analysis...")
+            
+            # Use bilateral analysis with adaptive clustering
+            trajectory_results = analyze_both_hemispheres_separately(
+                coords_array=coords_array,
+                entry_points=None,
+                max_neighbor_distance=8,
+                min_neighbors=3,
+                expected_spacing_range=(3.0, 5.0),
+                use_adaptive_clustering=True,
+                expected_contact_counts=expected_contact_counts
+            )
+        else:
+            logging.info("Using adaptive clustering for unified analysis...")
+            
+            # Find optimal parameters
+            parameter_search = adaptive_clustering_parameters(
+                coords_array=coords_array,
+                initial_eps=8,
+                initial_min_neighbors=3,
+                expected_contact_counts=expected_contact_counts,
+                max_iterations=10,
+                eps_step=0.5,
+                verbose=True
+            )
+            
+            optimal_eps = parameter_search['optimal_eps']
+            optimal_min_neighbors = parameter_search['optimal_min_neighbors']
+            
+            logging.info(f"Optimal parameters: eps={optimal_eps}, min_neighbors={optimal_min_neighbors}")
+            
+            # Run analysis with optimal parameters
+            trajectory_results = integrated_trajectory_analysis(
+                coords_array=coords_array,
+                entry_points=None,
+                max_neighbor_distance=optimal_eps,
+                min_neighbors=optimal_min_neighbors,
+                expected_spacing_range=(3.0, 5.0)
+            )
+            
+            trajectory_results['parameter_search'] = parameter_search
+        
+        if trajectory_results.get('n_trajectories', 0) == 0:
+            return {
+                'success': False,
+                'reason': 'No trajectories detected by adaptive clustering',
+                'analysis_results': trajectory_results,
+                'total_points': num_points,
+                'bilateral_info': hemi_info
+            }
+        
+        # Apply hemisphere splitting if needed
+        if is_bilateral:
+            trajectory_results = apply_hemisphere_splitting_to_results(
+                trajectory_results, coords_array, hemisphere='both'
+            )
+        
+        # Filter by trajectory IDs if specified
+        if trajectory_ids is not None:
+            original_trajectories = trajectory_results['trajectories']
+            filtered_trajectories = [traj for traj in original_trajectories if traj['cluster_id'] in trajectory_ids]
+            
+            trajectory_results['trajectories'] = filtered_trajectories
+            trajectory_results['n_trajectories'] = len(filtered_trajectories)
+            
+            logging.info(f"Filtered to {len(filtered_trajectories)} trajectories with IDs: {trajectory_ids}")
+        
+        # Calculate scores and save results (same as before)
+        scores_df = calculate_trajectory_scores(
+            trajectory_results['trajectories'], 
+            coords_array, 
+            trajectory_results
+        )
+        
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+            
+            trajectory_csv = os.path.join(output_dir, f'adaptive_trajectory_analysis_{volume_name}.csv')
+            scores_df.to_csv(trajectory_csv, index=False)
+            
+            viz_path = os.path.join(output_dir, f'adaptive_trajectory_visualization_{volume_name}.png')
+            create_basic_3d_plot(coords_array, trajectory_results, scores_df, viz_path)
+            
+            html_path = os.path.join(output_dir, f'adaptive_trajectory_report_{volume_name}.html')
+            create_interactive_annotation_report(scores_df, viz_path, html_path)
+            
+            logging.info(f"Enhanced results saved to: {output_dir}")
+        
+        logging.info("✅ Enhanced trajectory analysis completed successfully!")
+        
+        return {
+            'success': True,
+            'n_trajectories': trajectory_results['n_trajectories'],
+            'trajectories': trajectory_results['trajectories'],
+            'scores_df': scores_df,
+            'analysis_results': trajectory_results,
+            'total_points': num_points,
+            'trajectory_ids_analyzed': trajectory_ids,
+            'output_dir': output_dir,
+            'bilateral_info': hemi_info,
+            'analysis_method': 'bilateral_adaptive' if is_bilateral else 'unified_adaptive',
+            'optimization_used': True
+        }
+        
+    except Exception as e:
+        logging.error(f"❌ Enhanced trajectory analysis failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return {'success': False, 'error': str(e)}
+
+def create_trajectory_lines_in_slicer(trajectory_results, markup_node, coords_array):
+    """
+    Create trajectory lines in 3D Slicer based on analysis results.
+    
+    Args:
+        trajectory_results: Results from trajectory analysis
+        markup_node: Original markup node with points
+        coords_array: Array of coordinates
+    
+    Returns:
+        list: Created trajectory line nodes
+    """
+    try:
+        line_nodes = []
+        
+        if 'graph' not in trajectory_results:
+            logging.warning("No graph data in trajectory results")
+            return line_nodes
+        
+        clusters = np.array([node[1]['dbscan_cluster'] for node in trajectory_results['graph'].nodes(data=True)])
+        
+        for trajectory in trajectory_results['trajectories']:
+            cluster_id = trajectory['cluster_id']
+            
+            # Find points belonging to this trajectory
+            cluster_mask = clusters == cluster_id
+            cluster_indices = np.where(cluster_mask)[0]
+            
+            if len(cluster_indices) < 2:
+                continue
+            
+            # Get coordinates and sort along trajectory
+            cluster_coords = coords_array[cluster_indices]
+            
+            if 'direction' in trajectory and len(cluster_coords) > 2:
+                direction = np.array(trajectory['direction'])
+                center = np.mean(cluster_coords, axis=0)
+                projected = np.dot(cluster_coords - center, direction)
+                sorted_indices = np.argsort(projected)
+                cluster_coords = cluster_coords[sorted_indices]
+            
+            # Create line markup node
+            line_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsLineNode", 
+                                                          f"Trajectory_{cluster_id}")
+            
+            # Add points to create trajectory line
+            for i, coord in enumerate(cluster_coords):
+                if i == 0:
+                    line_node.SetNthControlPointPosition(0, coord[0], coord[1], coord[2])
+                elif i == 1:
+                    line_node.SetNthControlPointPosition(1, coord[0], coord[1], coord[2])
+                else:
+                    # For additional points, we need to create curve nodes
+                    break
+            
+            # Set line properties
+            display_node = line_node.GetDisplayNode()
+            if display_node:
+                # Color based on trajectory quality
+                n_contacts = trajectory.get('electrode_count', 0)
+                if n_contacts >= 8:
+                    display_node.SetColor(0.0, 1.0, 0.0)  # Green for good trajectories
+                elif n_contacts >= 5:
+                    display_node.SetColor(1.0, 0.5, 0.0)  # Orange for medium
+                else:
+                    display_node.SetColor(1.0, 0.0, 0.0)  # Red for poor
+                
+                display_node.SetLineThickness(3.0)
+                display_node.SetOpacity(0.8)
+            
+            line_nodes.append(line_node)
+            logging.info(f"Created trajectory line for cluster {cluster_id} with {len(cluster_coords)} points")
+        
+        return line_nodes
+        
+    except Exception as e:
+        logging.error(f"Error creating trajectory lines: {e}")
+        return []
 
 
 #
@@ -697,8 +1138,119 @@ class ConfidenceThresholdWidget:
             self.markupNode = None
         print("🧹 Cleared all electrode points")
 
+### TRAJECTORY ANALYSIS FUNCTIONS ###
+    def parseTrajectoryIds(self):
+        """Parse trajectory IDs from the input field."""
+        trajectory_ids = None
+        if hasattr(self.ui, 'trajectoryIdsLineEdit'):
+            ids_text = self.ui.trajectoryIdsLineEdit.text.strip()
+            if ids_text:
+                try:
+                    trajectory_ids = [int(x.strip()) for x in ids_text.split(',')]
+                    print(f"Parsed trajectory IDs: {trajectory_ids}")
+                except ValueError:
+                    slicer.util.warningDisplay("Invalid trajectory IDs format. Please use format: 0,1,2")
+                    return None
+        return trajectory_ids
 
-
+    def createBlueTrajectoryLines(self, trajectory_results, markup_node, coords_array, requested_ids):
+        """
+        Create blue trajectory lines in 3D Slicer for specified trajectory IDs.
+        
+        Args:
+            trajectory_results: Results from trajectory analysis
+            markup_node: Original markup node with points
+            coords_array: Array of coordinates
+            requested_ids: List of trajectory IDs to create lines for
+        
+        Returns:
+            list: Created trajectory line nodes
+        """
+        try:
+            line_nodes = []
+            
+            if 'graph' not in trajectory_results:
+                logging.warning("No graph data in trajectory results")
+                return line_nodes
+            
+            # Get cluster assignments for each point
+            clusters = np.array([node[1]['dbscan_cluster'] for node in trajectory_results['graph'].nodes(data=True)])
+            
+            # Create lines only for requested trajectory IDs
+            for trajectory in trajectory_results['trajectories']:
+                cluster_id = trajectory['cluster_id']
+                
+                # Skip if this trajectory ID was not requested
+                if cluster_id not in requested_ids:
+                    continue
+                
+                # Find points belonging to this trajectory
+                cluster_mask = clusters == cluster_id
+                cluster_indices = np.where(cluster_mask)[0]
+                
+                if len(cluster_indices) < 2:
+                    logging.warning(f"Trajectory {cluster_id} has less than 2 points, skipping line creation")
+                    continue
+                
+                # Get coordinates and sort along trajectory direction
+                cluster_coords = coords_array[cluster_indices]
+                
+                # Sort points along the trajectory direction if available
+                if 'direction' in trajectory and len(cluster_coords) > 2:
+                    direction = np.array(trajectory['direction'])
+                    center = np.mean(cluster_coords, axis=0)
+                    projected = np.dot(cluster_coords - center, direction)
+                    sorted_indices = np.argsort(projected)
+                    cluster_coords = cluster_coords[sorted_indices]
+                
+                # Create curve markup node for complex trajectories
+                if len(cluster_coords) > 2:
+                    curve_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsCurveNode", 
+                                                                f"Trajectory_Line_{cluster_id}")
+                    
+                    # Add all points to the curve
+                    for i, coord in enumerate(cluster_coords):
+                        curve_node.AddControlPoint(coord[0], coord[1], coord[2])
+                    
+                    # Set curve properties
+                    curve_node.SetCurveTypeToLinear()  # Linear interpolation between points
+                    
+                    # Set blue color
+                    display_node = curve_node.GetDisplayNode()
+                    if display_node:
+                        display_node.SetColor(0.0, 0.0, 1.0)  # Blue color (RGB)
+                        display_node.SetLineThickness(3.0)
+                        display_node.SetOpacity(1.0)
+                        display_node.SetTextScale(0)  # Hide labels
+                    
+                    line_nodes.append(curve_node)
+                    logging.info(f"Created blue trajectory curve for cluster {cluster_id} with {len(cluster_coords)} points")
+                
+                else:
+                    # For 2-point trajectories, use line markup
+                    line_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsLineNode", 
+                                                                f"Trajectory_Line_{cluster_id}")
+                    
+                    # Add start and end points
+                    line_node.SetNthControlPointPosition(0, cluster_coords[0][0], cluster_coords[0][1], cluster_coords[0][2])
+                    line_node.SetNthControlPointPosition(1, cluster_coords[1][0], cluster_coords[1][1], cluster_coords[1][2])
+                    
+                    # Set blue color
+                    display_node = line_node.GetDisplayNode()
+                    if display_node:
+                        display_node.SetColor(0.0, 0.0, 1.0)  # Blue color (RGB)
+                        display_node.SetLineThickness(3.0)
+                        display_node.SetOpacity(1.0)
+                        display_node.SetTextScale(0)  # Hide labels
+                    
+                    line_nodes.append(line_node)
+                    logging.info(f"Created blue trajectory line for cluster {cluster_id} with 2 points")
+            
+            return line_nodes
+            
+        except Exception as e:
+            logging.error(f"Error creating blue trajectory lines: {e}")
+            return []
 
 #
 # SEEG_maskingWidget - Pure Direct UI Access
@@ -741,6 +1293,10 @@ class SEEG_ElectrodeLocalizationWidget(ScriptedLoadableModuleWidget, VTKObservat
 
         # Connect buttons
         self.ui.applyButton.connect("clicked(bool)", self.onApplyButton)
+        #self.ui.huggingFaceLinkButton.connect("clicked(bool)", self.onOpenHuggingFaceLink)
+
+        # Trajectory analysis setup
+        self.setupTrajectoryAnalysis()
         
 
         # Connect volume selectors
@@ -749,7 +1305,10 @@ class SEEG_ElectrodeLocalizationWidget(ScriptedLoadableModuleWidget, VTKObservat
         if hasattr(self.ui, 'inputSelectorCT'):
             self.ui.inputSelectorCT.connect("currentNodeChanged(vtkMRMLNode*)", self.onInputChanged)
 
-        # === ADD CONFIDENCE VIEWER INITIALIZATION ===
+        # === BRAIN MASK OPTION INITIALIZATION ===
+        self.setupBrainMaskOption()
+
+        # === CONFIDENCE VIEWER INITIALIZATION ===
         self.setupConfidenceViewer()
 
         # Set default output path
@@ -829,6 +1388,112 @@ class SEEG_ElectrodeLocalizationWidget(ScriptedLoadableModuleWidget, VTKObservat
         print("Input selection changed")
         self.updateApplyButtonState()
 
+    def setupBrainMaskOption(self):
+        """Setup the brain mask generation link."""
+        try:
+            # Connect the Hugging Face link button
+            if hasattr(self.ui, 'huggingFaceLinkButton'):
+                self.ui.huggingFaceLinkButton.clicked.connect(self.onOpenHuggingFaceLink)
+                print("✅ Brain mask link button connected")
+            else:
+                print("⚠️ huggingFaceLinkButton not found in UI")
+                
+        except Exception as e:
+            print(f"⚠️ Brain mask setup failed: {e}")
+
+    def onOpenHuggingFaceLink(self):
+        """Open the Hugging Face brain mask generation link."""
+        import webbrowser
+        url = "https://huggingface.co/spaces/rocioavl/seeg-brain-mask-segmentation"
+        
+        # Show informative dialog
+        msg = qt.QMessageBox()
+        msg.setWindowTitle("Generate Brain Mask Online")
+        msg.setText("This will open our Hugging Face 🤗 brain mask generator.")
+        msg.setInformativeText(
+            "Steps:\n"
+            "1. Upload your post-operative CT scan\n"
+            "2. Wait for processing (~2-3 minutes)\n"
+            "3. Download the generated brain mask\n"
+            "4. Load it as 'MRI input' in this module\n"
+            "5. Check 'Input is already a binary brain mask'\n\n"
+            f"URL: {url}"
+        )
+        msg.setStandardButtons(qt.QMessageBox.Ok | qt.QMessageBox.Cancel)
+        msg.setDefaultButton(qt.QMessageBox.Ok)
+        
+        if msg.exec_() == qt.QMessageBox.Ok:
+            try:
+                webbrowser.open(url)
+                print(f"✅ Opened Hugging Face brain mask generator: {url}")
+            except Exception as e:
+                print(f"❌ Failed to open browser: {e}")
+                # Fallback - copy to clipboard
+                clipboard = qt.QApplication.clipboard()
+                clipboard.setText(url)
+                slicer.util.infoDisplay(
+                    f"Could not open browser automatically.\n\n"
+                    f"Link copied to clipboard:\n{url}\n\n"
+                    f"Paste this into your browser to access the brain mask generator."
+                )
+
+    def setupTrajectoryAnalysis(self):
+        """Setup the trajectory analysis section matching the Qt Designer UI."""
+        try:
+            # Configure markup selector for electrode markups
+            if hasattr(self.ui, 'markupSelector'):
+                self.ui.markupSelector.setMRMLScene(slicer.mrmlScene)
+                self.ui.markupSelector.nodeTypes = ["vtkMRMLMarkupsFiducialNode"]
+                self.ui.markupSelector.selectNodeUponCreation = False
+                self.ui.markupSelector.addEnabled = False
+                self.ui.markupSelector.removeEnabled = False
+                self.ui.markupSelector.noneEnabled = True
+                self.ui.markupSelector.showHidden = False
+                self.ui.markupSelector.showChildNodeTypes = False
+                self.ui.markupSelector.setToolTip("Select markup node containing electrode points")
+                print("✅ Markup selector configured")
+            
+            # Connect "Generate Reports and CSV" button
+            if hasattr(self.ui, 'generateReportsAndCSVButton'):
+                self.ui.generateReportsAndCSVButton.clicked.connect(self.onGenerateReportsAndCSV)
+                print("✅ Generate Reports and CSV button connected")
+            
+            # Connect "Create Trajectory Lines" button  
+            if hasattr(self.ui, 'createTrajectoryLinesButton'):
+                self.ui.createTrajectoryLinesButton.clicked.connect(self.onCreateTrajectoryLines)
+                print("✅ Create Trajectory Lines button connected")
+                
+            # Setup trajectory IDs input field
+            if hasattr(self.ui, 'trajectoryIdsLineEdit'):
+                self.ui.trajectoryIdsLineEdit.setPlaceholderText("comma-separated, e.g., 0,1,2")
+                print("✅ Trajectory IDs input configured")
+                
+            # Initially disable buttons until markup is selected
+            self.updateTrajectoryButtonStates()
+            
+            # Connect markup selector to update button states
+            if hasattr(self.ui, 'markupSelector'):
+                self.ui.markupSelector.connect("currentNodeChanged(vtkMRMLNode*)", self.updateTrajectoryButtonStates)
+                
+        except Exception as e:
+            print(f"⚠️ Trajectory analysis setup failed: {e}")
+
+
+    def getSelectedMarkupNode(self):
+        """Get the currently selected markup node."""
+        if hasattr(self.ui, 'markupSelector'):
+            return self.ui.markupSelector.currentNode()
+        return None 
+    
+    def updateTrajectoryButtonStates(self):
+        """Enable/disable trajectory buttons based on markup selection."""
+        markup_node = self.getSelectedMarkupNode()
+        has_markup = markup_node is not None
+        
+        if hasattr(self.ui, 'generateReportsAndCSVButton'):
+            self.ui.generateReportsAndCSVButton.setEnabled(has_markup)
+        if hasattr(self.ui, 'createTrajectoryLinesButton'):
+            self.ui.createTrajectoryLinesButton.setEnabled(has_markup)
 
 ######## Output path handling ########
     def onBrowseOutput(self) -> None:
@@ -1015,16 +1680,7 @@ class SEEG_ElectrodeLocalizationWidget(ScriptedLoadableModuleWidget, VTKObservat
                 
                 if enhanced_volumes and len(enhanced_volumes) > 0:
                     volume_names = list(enhanced_volumes.keys())
-                    
-                    success_message = (
-                        f"✅ Processing completed successfully!\n\n"
-                        f"📁 Results saved to: {main_output_dir}\n\n"
-                        f"📄 Brain mask: Brain_mask/{brain_mask_filename}\n"
-                        f"📄 Enhanced volumes ({len(enhanced_volumes)}): Enhanced_masks/\n"
-                        f"    • " + "\n    • ".join(volume_names)
-                    )
-                    
-                    slicer.util.infoDisplay(success_message)
+                    logging.info(f"Enhanced CT volumes generated: {', '.join(volume_names)}")
                     logging.info(f"All results saved to: {main_output_dir}")
                 else:
                     slicer.util.warningDisplay("No enhanced volumes were generated.")
@@ -1042,7 +1698,7 @@ class SEEG_ElectrodeLocalizationWidget(ScriptedLoadableModuleWidget, VTKObservat
                 global_masks_dir = os.path.join(main_output_dir, "Global_masks")
                 os.makedirs(global_masks_dir, exist_ok=True)
                 
-                # ⭐ DYNAMIC: Build the correct excluded filename with CT volume name ⭐
+                # ⭐  filename with CT volume name ⭐
                 excluded_file = f"Filtered_DESCARGAR_roi_volume_features_{input_volume_node_CT.GetName()}.nrrd"
                 confidence_ct_source = os.path.join(enhanced_masks_dir, excluded_file)
                 confidence_ct_backup = os.path.join(main_output_dir, "confidence_ct_file.nrrd")
@@ -1087,10 +1743,10 @@ class SEEG_ElectrodeLocalizationWidget(ScriptedLoadableModuleWidget, VTKObservat
                             output_name = f"top_mask_{i}_{input_volume_node_CT.GetName()}"
                             selector.save_mask(selector.masks[mask_name], output_name)
                         
-                        # === REPLACE THE PROGRESSIVE MASKS WITH CONSENSUS MASK ===
+                        # === CONSENSUS MASK ===
                         # Create 50% consensus mask instead of progressive masks
                         num_masks = len(selector.masks)
-                        consensus_threshold = max(1, int(0.35 * num_masks))  # At least 50% agreement
+                        consensus_threshold = max(1, int(0.5 * num_masks))  # At least 50% agreement
                         consensus_mask = np.where(selector.global_vote_map >= consensus_threshold, 1, 0)
                         consensus_output_name = f"consensus_50pct_{input_volume_node_CT.GetName()}"
                         selector.save_mask(consensus_mask, consensus_output_name)
@@ -1216,30 +1872,319 @@ class SEEG_ElectrodeLocalizationWidget(ScriptedLoadableModuleWidget, VTKObservat
                 confidence_info = ""
 
 
-            # === UPDATE FINAL SUCCESS MESSAGE (your existing code should work) ===
+            # === SINGLE FINAL SUCCESS MESSAGE ===
             if enhanced_volumes and len(enhanced_volumes) > 0:
-                volume_names = list(enhanced_volumes.keys())
+                # Count files in each directory
+                brain_mask_files = [f for f in os.listdir(brain_mask_dir) if f.endswith('.nrrd')]
+                enhanced_files = [f for f in os.listdir(enhanced_masks_dir) if f.endswith('.nrrd')]
                 
-                final_success_message = (
-                    f"✅ Processing completed successfully!\n\n"
-                    f"📁 Results saved to: {main_output_dir}\n\n"
-                    f"📄 Brain mask: Brain_mask/{brain_mask_filename}\n"
-                    f"📄 Enhanced volumes ({len(enhanced_volumes)}): Enhanced_masks/\n"
-                    f"    • " + "\n    • ".join(volume_names)
-                )
+                # Build concise folder structure
+                folder_structure = f"📁 {main_output_dir}\n"
+                folder_structure += f"  ├── Brain_mask/: {len(brain_mask_files)} file\n"
+                folder_structure += f"  ├── Enhanced_masks/: {len(enhanced_files)} files\n"
                 
-                # Add global mask info if available
-                if 'global_mask_info' in locals() and global_mask_info:
-                    final_success_message += global_mask_info
+                # Add global masks info if available
+                if os.path.exists(global_masks_dir):
+                    global_mask_files = [f for f in os.listdir(global_masks_dir) if f.endswith('.nrrd')]
+                    folder_structure += f"  ├── Global_masks/: {len(global_mask_files)} files\n"
                 
                 # Add confidence info if available
-                if confidence_info:
-                    final_success_message += confidence_info
+                if os.path.exists(confidence_dir):
+                    confidence_files = [f for f in os.listdir(confidence_dir) if f.endswith('.csv') or f.endswith('.txt')]
+                    folder_structure += f"  └── Confidence_Analysis/: {len(confidence_files)} files\n"
+                else:
+                    folder_structure = folder_structure.rstrip('\n') + '\n'
+                
+                # Add markups info
+                markups_info = ""
+                if hasattr(self, 'confidenceWidget') and self.confidenceWidget and self.confidenceWidget.markupNode:
+                    num_electrodes = self.confidenceWidget.markupNode.GetNumberOfControlPoints()
+                    markups_info = f"\n🎯 {num_electrodes} electrode candidates loaded in 3D Slicer"
+                
+                final_success_message = f"✅ Processing completed successfully!\n\n{folder_structure}{markups_info}"
                 
                 slicer.util.infoDisplay(final_success_message)
                 logging.info(f"All results saved to: {main_output_dir}")
+            else:
+                slicer.util.errorDisplay("Processing failed - no enhanced volumes generated.")
 
+# ---Trajectory (early stages of progress)---------------------------------------------------------------------------
+    def onGenerateReportsAndCSV(self):
+        """Generate trajectory analysis reports and CSV files."""
+        print("Generate Reports and CSV button clicked!")
+        
+        try:
+            # Check if trajectory analysis is available
+            if not TRAJECTORY_ANALYSIS_AVAILABLE:
+                slicer.util.errorDisplay("Trajectory analysis module is not available. Please check the installation.")
+                return
+            
+            # Get selected markup node
+            markup_node = self.getSelectedMarkupNode()
+            if not markup_node:
+                slicer.util.errorDisplay("Please select a markup node containing electrode points.")
+                return
+            
+            num_points = markup_node.GetNumberOfControlPoints()
+            if num_points < 6:
+                slicer.util.errorDisplay(f"Need at least 6 electrode points for trajectory analysis. Selected markup has {num_points} points.")
+                return
+            
+            # Get trajectory IDs if specified
+            trajectory_ids = self.parseTrajectoryIds()
+            
+            # Get output directory (patient folder)
+            main_output_dir = self.getOutputDirectory()
+            trajectory_dir = os.path.join(main_output_dir, "Trajectory_Analysis")
+            os.makedirs(trajectory_dir, exist_ok=True)
+            
+            # Get volume name from CT input or use markup name
+            volume_name = markup_node.GetName()
+            if hasattr(self.ui, 'inputSelectorCT') and self.ui.inputSelectorCT.currentNode():
+                volume_name = self.ui.inputSelectorCT.currentNode().GetName()
+            
+            # Show progress
+            with slicer.util.tryWithErrorDisplay("Failed to generate trajectory reports.", waitCursor=True):
+                
+                # Run trajectory analysis
+                results = run_trajectory_analysis_on_markups(
+                    markup_node=markup_node,
+                    trajectory_ids=trajectory_ids,
+                    output_dir=trajectory_dir,
+                    volume_name=volume_name
+                )
+                
+                if results['success']:
+                    # Count generated files
+                    generated_files = []
+                    csv_file = os.path.join(trajectory_dir, f'trajectory_analysis_{volume_name}.csv')
+                    viz_file = os.path.join(trajectory_dir, f'trajectory_visualization_{volume_name}.png')
+                    html_file = os.path.join(trajectory_dir, f'trajectory_report_{volume_name}.html')
+                    
+                    if os.path.exists(csv_file):
+                        generated_files.append("📊 Trajectory analysis CSV")
+                    if os.path.exists(viz_file):
+                        generated_files.append("📈 3D visualization plot")
+                    if os.path.exists(html_file):
+                        generated_files.append("🌐 Interactive HTML report")
+                    
+                    # Show success message
+                    success_msg = f"""✅ Trajectory Reports Generated Successfully!
 
+    📊 Analysis Results:
+    - Markup node: {markup_node.GetName()}
+    - Total electrode points: {results['total_points']}
+    - Trajectories detected: {results['n_trajectories']}
+
+    📁 Files saved to: {trajectory_dir}
+    {chr(10).join([f'• {file}' for file in generated_files])}
+
+    📈 CSV contains trajectory data with:
+    - trajectory_id, n_contacts, length_mm, linearity_pca
+    - center coordinates, spacing statistics  
+    - curvature angles, algorithm scores"""
+                    
+                    if trajectory_ids:
+                        success_msg += f"\n\n🔍 Analyzed specific trajectory IDs: {trajectory_ids}"
+                    else:
+                        success_msg += f"\n\n🔍 Analyzed all {results['n_trajectories']} detected trajectories"
+                    
+                    slicer.util.infoDisplay(success_msg)
+                    
+                else:
+                    error_msg = f"❌ Trajectory analysis failed: {results.get('reason', 'Unknown error')}"
+                    if 'available_ids' in results:
+                        error_msg += f"\n\nAvailable trajectory IDs: {results['available_ids']}"
+                    slicer.util.errorDisplay(error_msg)
+            
+        except Exception as e:
+            slicer.util.errorDisplay(f"Error during trajectory report generation: {str(e)}")
+            logging.error(f"Trajectory report generation error: {str(e)}")
+
+    def onCreateTrajectoryLines(self):
+        """Create trajectory line markups in 3D Slicer."""
+        print("Create Trajectory Lines button clicked!")
+        
+        try:
+            # Check if trajectory analysis is available
+            if not TRAJECTORY_ANALYSIS_AVAILABLE:
+                slicer.util.errorDisplay("Trajectory analysis module is not available. Please check the installation.")
+                return
+            
+            # Get selected markup node
+            markup_node = self.getSelectedMarkupNode()
+            if not markup_node:
+                slicer.util.errorDisplay("Please select a markup node containing electrode points.")
+                return
+            
+            num_points = markup_node.GetNumberOfControlPoints()
+            if num_points < 6:
+                slicer.util.errorDisplay(f"Need at least 6 electrode points for trajectory analysis. Selected markup has {num_points} points.")
+                return
+            
+            # Get trajectory IDs - REQUIRED for line creation
+            trajectory_ids = self.parseTrajectoryIds()
+            if trajectory_ids is None or len(trajectory_ids) == 0:
+                slicer.util.errorDisplay("Please specify trajectory IDs to create lines (e.g., 0,1,2)")
+                return
+            
+            # Show progress
+            with slicer.util.tryWithErrorDisplay("Failed to create trajectory lines.", waitCursor=True):
+                
+                # Run trajectory analysis (needed to get trajectory structure)
+                results = run_trajectory_analysis_on_markups(
+                    markup_node=markup_node,
+                    trajectory_ids=trajectory_ids,
+                    output_dir=None,  # Don't save files for line creation
+                    volume_name="line_analysis"
+                )
+                
+                if results['success']:
+                    # Extract coordinates from markup node
+                    coords_list = []
+                    for i in range(num_points):
+                        pos = [0, 0, 0]
+                        markup_node.GetNthControlPointPosition(i, pos)
+                        coords_list.append(pos)
+                    coords_array = np.array(coords_list)
+                    
+                    # Create trajectory lines in Slicer
+                    line_nodes = self.createTrajectoryLinesInSlicer(
+                        results['analysis_results'], 
+                        markup_node, 
+                        coords_array,
+                        trajectory_ids
+                    )
+                    
+                    # Show success message
+                    success_msg = f"""✅ Trajectory Lines Created Successfully!
+
+    🎯 Generated Trajectory Lines:
+    - Source markup: {markup_node.GetName()}
+    - Number of trajectory lines: {len(line_nodes)}
+    - Trajectory IDs: {trajectory_ids}
+    - Color: Blue (for easy identification)
+
+    📊 Analysis Summary:
+    - Total electrode points used: {results['total_points']}
+    - Trajectories detected: {results['n_trajectories']}
+
+    💡 Lines are now visible in all 3D Slicer views."""
+                    
+                    slicer.util.infoDisplay(success_msg)
+                    
+                else:
+                    error_msg = f"❌ Trajectory analysis failed: {results.get('reason', 'Unknown error')}"
+                    if 'available_ids' in results:
+                        error_msg += f"\n\nAvailable trajectory IDs: {results['available_ids']}"
+                        error_msg += f"\nRequested IDs: {trajectory_ids}"
+                    slicer.util.errorDisplay(error_msg)
+            
+        except Exception as e:
+            slicer.util.errorDisplay(f"Error creating trajectory lines: {str(e)}")
+            logging.error(f"Trajectory line creation error: {str(e)}")
+
+    def parseTrajectoryIds(self):
+        """Parse trajectory IDs from the input field."""
+        trajectory_ids = None
+        if hasattr(self.ui, 'trajectoryIdsLineEdit'):
+            ids_text = self.ui.trajectoryIdsLineEdit.text.strip()
+            if ids_text:
+                try:
+                    trajectory_ids = [int(x.strip()) for x in ids_text.split(',') if x.strip()]
+                    print(f"Parsed trajectory IDs: {trajectory_ids}")
+                except ValueError:
+                    slicer.util.warningDisplay("Invalid trajectory IDs format. Please use format: 0,1,2")
+                    return None
+        return trajectory_ids
+
+    def createTrajectoryLinesInSlicer(self, trajectory_results, markup_node, coords_array, requested_ids):
+        """Create trajectory lines in 3D Slicer based on analysis results."""
+        try:
+            line_nodes = []
+            
+            if 'graph' not in trajectory_results:
+                logging.warning("No graph data in trajectory results")
+                return line_nodes
+            
+            # Get cluster assignments for each point
+            clusters = np.array([node[1]['dbscan_cluster'] for node in trajectory_results['graph'].nodes(data=True)])
+            
+            # Create lines only for requested trajectory IDs
+            for trajectory in trajectory_results['trajectories']:
+                cluster_id = trajectory['cluster_id']
+                
+                # Skip if this trajectory ID was not requested
+                if cluster_id not in requested_ids:
+                    continue
+                
+                # Find points belonging to this trajectory
+                cluster_mask = clusters == cluster_id
+                cluster_indices = np.where(cluster_mask)[0]
+                
+                if len(cluster_indices) < 2:
+                    logging.warning(f"Trajectory {cluster_id} has less than 2 points, skipping line creation")
+                    continue
+                
+                # Get coordinates and sort along trajectory direction
+                cluster_coords = coords_array[cluster_indices]
+                
+                # Sort points along the trajectory direction if available
+                if 'direction' in trajectory and len(cluster_coords) > 2:
+                    direction = np.array(trajectory['direction'])
+                    center = np.mean(cluster_coords, axis=0)
+                    projected = np.dot(cluster_coords - center, direction)
+                    sorted_indices = np.argsort(projected)
+                    cluster_coords = cluster_coords[sorted_indices]
+                
+                # Create curve markup node for complex trajectories
+                if len(cluster_coords) > 2:
+                    curve_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsCurveNode", 
+                                                                f"Trajectory_Line_{cluster_id}")
+                    
+                    # Add all points to the curve
+                    for i, coord in enumerate(cluster_coords):
+                        curve_node.AddControlPoint(coord[0], coord[1], coord[2])
+                    
+                    # Set curve properties
+                    curve_node.SetCurveTypeToLinear()  # Linear interpolation between points
+                    
+                    # Set blue color
+                    display_node = curve_node.GetDisplayNode()
+                    if display_node:
+                        display_node.SetSelectedColor(0.0, 0.0, 1.0)  # Blue color (RGB)
+                        display_node.SetLineThickness(0.4)
+                        display_node.SetOpacity(1.0)
+                        display_node.SetTextScale(0)  # Hide labels
+                    
+                    line_nodes.append(curve_node)
+                    logging.info(f"Created blue trajectory curve for cluster {cluster_id} with {len(cluster_coords)} points")
+                
+                else:
+                    # For 2-point trajectories, use line markup
+                    line_node = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsLineNode", 
+                                                                f"Trajectory_Line_{cluster_id}")
+                    
+                    # Add start and end points
+                    line_node.SetNthControlPointPosition(0, cluster_coords[0][0], cluster_coords[0][1], cluster_coords[0][2])
+                    line_node.SetNthControlPointPosition(1, cluster_coords[1][0], cluster_coords[1][1], cluster_coords[1][2])
+                    
+                    # Set blue color
+                    display_node = line_node.GetDisplayNode()
+                    if display_node:
+                        display_node.SetColor(0.0, 0.0, 1.0)  # Blue color (RGB)
+                        display_node.SetLineThickness(3.0)
+                        display_node.SetOpacity(1.0)
+                        display_node.SetTextScale(0)  # Hide labels
+                    
+                    line_nodes.append(line_node)
+                    logging.info(f"Created blue trajectory line for cluster {cluster_id} with 2 points")
+            
+            return line_nodes
+            
+        except Exception as e:
+            logging.error(f"Error creating trajectory lines: {e}")
+            return []
 
 #
 # SEEG_ElectrodeLocalizationLogic
