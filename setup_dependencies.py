@@ -26,6 +26,7 @@ def install_slicerseeg_dependencies():
         ('monai', 'Brain segmentation'),
         ('networkx', 'Trajectory analysis'),
         ('plotly', 'Interactive visualizations'),
+        ('scikit-image', 'Image processing'),
         ('tqdm', 'Progress bars'),
     ]
     
@@ -91,7 +92,7 @@ def install_slicerseeg_dependencies():
         for pkg in failed_packages:
             print(f"   • {pkg}")
         print(f"\nYou can manually install failed packages:")
-        print(f"subprocess.check_call([sys.executable, '-m', 'pip', 'install', '{failed_packages[0]}'])")
+        print(f"slicer.util.pip_install('{failed_packages[0]}')")
     
     print("=" * 60)
     
