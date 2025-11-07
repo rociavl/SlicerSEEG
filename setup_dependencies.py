@@ -8,43 +8,60 @@ Usage:
 2. Go to: View → Python Interactor
 3. Copy and paste this entire file
 4. Press Enter
-5. Wait for installation (2-5 minutes)
+5. Wait for installation (3-7 minutes)
 6. Restart Slicer when prompted
 
-Alternatively, if you have this file saved:
-exec(open('/path/to/setup_dependencies.py').read())
+Alternatively, run from URL:
+import urllib.request
+exec(urllib.request.urlopen('https://raw.githubusercontent.com/rociavl/SlicerSEEG/main/setup_dependencies.py').read().decode())
 """
 
 def install_slicerseeg_dependencies():
-    """One-command installation of all SlicerSEEG dependencies."""
+    """One-command installation of all SlicerSEEG dependencies with version constraints."""
     import slicer
     
-    # Define all required packages
+    # Define all required packages with version constraints for compatibility
     dependencies = [
-        ('lightgbm', 'Confidence analysis'),
-        ('torch', 'Brain segmentation (CPU version)'),
-        ('monai', 'Brain segmentation'),
-        ('networkx', 'Trajectory analysis'),
-        ('plotly', 'Interactive visualizations'),
-        ('scikit-image', 'Image processing'),
-        ('tqdm', 'Progress bars'),
+        ('numpy<2.0', 'Core numerical computing (NumPy 2.0 not yet supported)'),
+        ('scipy<1.14', 'Scientific computing'),
+        ('pandas<3.0', 'Data analysis'),
+        ('scikit-learn<1.6', 'Machine learning'),
+        ('scikit-image<0.25', 'Image processing'),
+        ('PyWavelets<2.0', 'Wavelet transforms'),
+        ('SimpleITK<3.0', 'Medical image I/O'),
+        ('lightgbm<5.0', 'Confidence analysis'),
+        ('torch<3.0', 'Brain segmentation (CPU version)'),
+        ('monai<2.0', 'Medical imaging AI'),
+        ('networkx<4.0', 'Trajectory analysis'),
+        ('plotly<6.0', 'Interactive visualizations'),
+        ('matplotlib<4.0', 'Plotting'),
+        ('joblib<2.0', 'Model serialization'),
+        ('pynrrd<2.0', 'NRRD file support'),
+        ('nibabel<6.0', 'NIfTI file support'),
+        ('seaborn<1.0', 'Statistical visualization'),
+        ('reportlab<5.0', 'PDF report generation'),
+        ('tqdm<5.0', 'Progress bars'),
     ]
     
     print("=" * 60)
     print("SlicerSEEG Dependency Installer")
     print("=" * 60)
-    print(f"\nWill install {len(dependencies)} packages:")
+    print(f"\nWill install {len(dependencies)} packages with version constraints:")
     for pkg, purpose in dependencies:
-        print(f"  • {pkg:15} - {purpose}")
+        # Extract package name for display
+        pkg_name = pkg.split('<')[0].split('>')[0].split('=')[0]
+        print(f"  • {pkg_name:20} - {purpose}")
     
-    print(f"\nEstimated time: 2-5 minutes")
+    print(f"\nEstimated time: 3-7 minutes")
+    print("\nNote: Version constraints ensure compatibility across Slicer versions.")
     print("=" * 60)
     
     # Confirm installation
     reply = slicer.util.confirmYesNoDisplay(
         "Install all SlicerSEEG dependencies?\n\n"
-        f"This will install {len(dependencies)} packages.\n"
-        "Installation takes 2-5 minutes.\n\n"
+        f"This will install {len(dependencies)} packages with version constraints.\n"
+        "Installation takes 3-7 minutes.\n\n"
+        "Note: If you have NumPy 2.0, it will be downgraded to 1.x for compatibility.\n\n"
         "Continue?"
     )
     
@@ -85,21 +102,25 @@ def install_slicerseeg_dependencies():
     print(f"✅ Successful: {len(successful_packages)}/{len(dependencies)}")
     if successful_packages:
         for pkg in successful_packages:
-            print(f"   • {pkg}")
+            pkg_name = pkg.split('<')[0].split('>')[0].split('=')[0]
+            print(f"   • {pkg_name}")
     
     if failed_packages:
         print(f"\n❌ Failed: {len(failed_packages)}")
         for pkg in failed_packages:
-            print(f"   • {pkg}")
+            pkg_name = pkg.split('<')[0].split('>')[0].split('=')[0]
+            print(f"   • {pkg_name}")
         print(f"\nYou can manually install failed packages:")
-        print(f"slicer.util.pip_install('{failed_packages[0]}')")
+        print(f"subprocess.check_call([sys.executable, '-m', 'pip', 'install', '{failed_packages[0]}'])")
     
     print("=" * 60)
     
     if len(successful_packages) == len(dependencies):
         slicer.util.infoDisplay(
             "✅ All dependencies installed successfully!\n\n"
-            "Please RESTART 3D Slicer to use SlicerSEEG."
+            "Please RESTART 3D Slicer to use SlicerSEEG.\n\n"
+            "Note: If you see any version warnings, they are expected\n"
+            "due to compatibility constraints."
         )
         return True
     else:
