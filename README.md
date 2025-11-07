@@ -1,4 +1,4 @@
-# SlicerSEEG
+﻿# SlicerSEEG
 
 **Automated SEEG Electrode Localization for Epilepsy Surgery Planning**
 
@@ -402,7 +402,5 @@ This work was made possible by the collaboration of exceptional individuals and 
 <div align="center">
 
 **Questions or need help?** Open an issue on [GitHub](https://github.com/rociavl/SlicerSEEG/issues) or contact the development team.
-
-**Made with ❤️ for the epilepsy research community**
 
 </div>
