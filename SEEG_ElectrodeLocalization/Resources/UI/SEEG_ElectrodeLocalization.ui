@@ -98,6 +98,30 @@
         </property>
        </widget>
       </item>
+      <item row="8" column="0">
+       <widget class="QLabel" name="outputDirLabel">
+        <property name="text">
+         <string>Output Directory (optional):</string>
+        </property>
+       </widget>
+      </item>
+      <item row="10" column="0">
+       <widget class="QPushButton" name="selectOutputDirButton">
+        <property name="text">
+         <string>📁 Select Custom Output Directory</string>
+        </property>
+       </widget>
+      </item>
+      <item row="11" column="0">
+       <widget class="QLabel" name="selectedOutputDirLabel">
+        <property name="text">
+         <string>Using default: Documents/SEEG_Results/[folder_name]/Trajectory_Analysis</string>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
       <item row="7" column="0">
        <widget class="QLineEdit" name="trajectoryIdsLineEdit">
         <property name="text">

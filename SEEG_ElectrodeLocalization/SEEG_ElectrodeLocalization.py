@@ -1180,6 +1180,7 @@ class SEEG_ElectrodeLocalizationWidget(ScriptedLoadableModuleWidget, VTKObservat
         self.logic = None
         self.outputVolumeNode = None  # Track the generated mask volume
         self.confidenceWidget = None # Confidence viewer widget
+        self.customTrajectoryOutputDir = None  # Track custom output directory for trajectory analysis
 
 
     def setup(self) -> None:
@@ -1366,29 +1367,39 @@ class SEEG_ElectrodeLocalizationWidget(ScriptedLoadableModuleWidget, VTKObservat
                 self.ui.markupSelector.showChildNodeTypes = False
                 self.ui.markupSelector.setToolTip("Select markup node containing electrode points")
                 print("✅ Markup selector configured")
-            
+
             # Connect "Generate Reports and CSV" button
             if hasattr(self.ui, 'generateReportsAndCSVButton'):
                 self.ui.generateReportsAndCSVButton.clicked.connect(self.onGenerateReportsAndCSV)
                 print("✅ Generate Reports and CSV button connected")
-            
-            # Connect "Create Trajectory Lines" button  
+
+            # Connect "Create Trajectory Lines" button
             if hasattr(self.ui, 'createTrajectoryLinesButton'):
                 self.ui.createTrajectoryLinesButton.clicked.connect(self.onCreateTrajectoryLines)
                 print("✅ Create Trajectory Lines button connected")
-                
+
             # Setup trajectory IDs input field
             if hasattr(self.ui, 'trajectoryIdsLineEdit'):
                 self.ui.trajectoryIdsLineEdit.setPlaceholderText("comma-separated, e.g., 0,1,2")
                 print("✅ Trajectory IDs input configured")
-                
+
+            # Connect custom output directory selector button
+            if hasattr(self.ui, 'selectOutputDirButton'):
+                self.ui.selectOutputDirButton.clicked.connect(self.onSelectTrajectoryOutputDir)
+                print("✅ Custom output directory button connected")
+
+            # Initialize the output directory label
+            if hasattr(self.ui, 'selectedOutputDirLabel'):
+                self.updateTrajectoryOutputDirLabel()
+                print("✅ Output directory label initialized")
+
             # Initially disable buttons until markup is selected
             self.updateTrajectoryButtonStates()
-            
+
             # Connect markup selector to update button states
             if hasattr(self.ui, 'markupSelector'):
                 self.ui.markupSelector.connect("currentNodeChanged(vtkMRMLNode*)", self.updateTrajectoryButtonStates)
-                
+
         except Exception as e:
             print(f"⚠️ Trajectory analysis setup failed: {e}")
 
@@ -1403,11 +1414,66 @@ class SEEG_ElectrodeLocalizationWidget(ScriptedLoadableModuleWidget, VTKObservat
         """Enable/disable trajectory buttons based on markup selection."""
         markup_node = self.getSelectedMarkupNode()
         has_markup = markup_node is not None
-        
+
         if hasattr(self.ui, 'generateReportsAndCSVButton'):
             self.ui.generateReportsAndCSVButton.setEnabled(has_markup)
         if hasattr(self.ui, 'createTrajectoryLinesButton'):
             self.ui.createTrajectoryLinesButton.setEnabled(has_markup)
+
+    def onSelectTrajectoryOutputDir(self):
+        """Open directory dialog to select custom output directory for trajectory analysis."""
+        try:
+            # Open directory selection dialog
+            directory = qt.QFileDialog.getExistingDirectory(
+                None,
+                "Select Output Directory for Trajectory Analysis",
+                os.path.expanduser("~"),
+                qt.QFileDialog.ShowDirsOnly | qt.QFileDialog.DontResolveSymlinks
+            )
+
+            if directory:
+                # Store the selected directory
+                self.customTrajectoryOutputDir = directory
+                logging.info(f"Custom trajectory output directory set to: {directory}")
+
+                # Update the label
+                self.updateTrajectoryOutputDirLabel()
+
+                # Show confirmation message
+                slicer.util.infoDisplay(
+                    f"✅ Custom Output Directory Set\n\n"
+                    f"Trajectory analysis results will be saved to:\n{directory}\n\n"
+                    f"To reset to default, restart the module."
+                )
+            else:
+                logging.info("Directory selection cancelled by user")
+
+        except Exception as e:
+            logging.error(f"Error selecting output directory: {str(e)}")
+            slicer.util.errorDisplay(f"Failed to select directory: {str(e)}")
+
+    def updateTrajectoryOutputDirLabel(self):
+        """Update the label showing the current trajectory output directory."""
+        if hasattr(self.ui, 'selectedOutputDirLabel'):
+            if self.customTrajectoryOutputDir:
+                # Show custom directory
+                label_text = f"Custom: {self.customTrajectoryOutputDir}"
+            else:
+                # Show default
+                label_text = "Using default: Documents/SEEG_Results/[folder_name]/Trajectory_Analysis"
+
+            self.ui.selectedOutputDirLabel.setText(label_text)
+
+    def getTrajectoryOutputDirectory(self):
+        """Get the trajectory analysis output directory (custom or default)."""
+        if self.customTrajectoryOutputDir:
+            # Use custom directory
+            return self.customTrajectoryOutputDir
+        else:
+            # Use default directory structure
+            main_output_dir = self.getOutputDirectory()
+            trajectory_dir = os.path.join(main_output_dir, "Trajectory_Analysis")
+            return trajectory_dir
 
 ######## Output path handling ########
     def onBrowseOutput(self) -> None:
@@ -1878,11 +1944,11 @@ class SEEG_ElectrodeLocalizationWidget(ScriptedLoadableModuleWidget, VTKObservat
             
             # Get trajectory IDs if specified
             trajectory_ids = self.parseTrajectoryIds()
-            
-            # Get output directory (patient folder)
-            main_output_dir = self.getOutputDirectory()
-            trajectory_dir = os.path.join(main_output_dir, "Trajectory_Analysis")
+
+            # Get output directory (custom or default)
+            trajectory_dir = self.getTrajectoryOutputDirectory()
             os.makedirs(trajectory_dir, exist_ok=True)
+            logging.info(f"Using trajectory output directory: {trajectory_dir}")
             
             # Get volume name from CT input or use markup name
             volume_name = markup_node.GetName()
