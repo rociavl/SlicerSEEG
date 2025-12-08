@@ -47,6 +47,31 @@ electrode_path_dir = os.path.join(module_dir, "Electrode_path")
 if electrode_path_dir not in sys.path:
     sys.path.append(electrode_path_dir)
 
+# MANUAL TRAJECTORY RECONSTRUCTION ===
+trajectory_reconstruction_dir = os.path.join(module_dir, "Trajectory_reconstruction")
+if trajectory_reconstruction_dir not in sys.path:
+    sys.path.append(trajectory_reconstruction_dir)
+
+try:
+    from trajectory_reconstruction import (
+        estimate_contact_count,
+        linear_interpolate_contacts,
+        spline_interpolate_contacts,
+        find_contacts_near_trajectory,
+        fit_trajectory_to_detected_contacts,
+        fill_missing_contacts,
+        label_contacts_seeg_convention,
+        snap_to_nearest_point,
+        create_trajectory_output,
+        validate_trajectory_points,
+        get_all_points_from_markup_node,
+    )
+    TRAJECTORY_RECONSTRUCTION_AVAILABLE = True
+    print("Trajectory reconstruction module loaded successfully")
+except ImportError as e:
+    print(f"Trajectory reconstruction module not available: {e}")
+    TRAJECTORY_RECONSTRUCTION_AVAILABLE = False
+
 # Import trajectory analysis functions
 try:
     from test_slicer import (
@@ -1166,6 +1191,633 @@ class ConfidenceThresholdWidget:
         return trajectory_ids
 
 
+#############
+## Manual Trajectory Widget
+######################
+class ManualTrajectoryWidget:
+    """
+    Widget for manual electrode trajectory reconstruction.
+
+    Provides two modes:
+    1. Semi-Automatic: Uses detected contacts from Electrode_Predictions markup
+    2. Manual: Estimates contacts based on trajectory length and spacing
+    """
+
+    def __init__(self, parent_layout, mrml_scene, grid_row=None):
+        """Initialize the manual trajectory widget.
+
+        Args:
+            parent_layout: Parent layout to add widget to
+            mrml_scene: MRML scene reference
+            grid_row: Optional row number for grid layout positioning
+        """
+        self.parentLayout = parent_layout
+        self.mrmlScene = mrml_scene
+        self.gridRow = grid_row
+
+        # State variables
+        self.entryPoint = None
+        self.deepestPoint = None
+        self.detectedContactsNode = None
+        self.previewLineNode = None
+        self.tempPlacementNode = None
+        self.isSelectingEntry = False
+        self.isSelectingDeepest = False
+        self.placementObserver = None
+
+        # Create UI
+        self.createUI()
+        self.setupConnections()
+
+    def createUI(self):
+        """Create the UI elements programmatically."""
+        import qt
+        import ctk
+
+        # Create collapsible button
+        self.collapsibleButton = ctk.ctkCollapsibleButton()
+        self.collapsibleButton.text = "3. Trajectory Reconstruction"
+        self.collapsibleButton.collapsed = True
+
+        # Add to layout - use grid position if specified
+        if self.gridRow is not None and hasattr(self.parentLayout, 'addWidget'):
+            # For QGridLayout, add at specific row
+            self.parentLayout.addWidget(self.collapsibleButton, self.gridRow, 0)
+        else:
+            # For other layouts, just append
+            self.parentLayout.addWidget(self.collapsibleButton)
+
+        # Main layout inside collapsible
+        mainLayout = qt.QVBoxLayout(self.collapsibleButton)
+
+        # === MODE SELECTION ===
+        modeGroupBox = qt.QGroupBox("Mode")
+        modeLayout = qt.QVBoxLayout(modeGroupBox)
+
+        self.semiAutoRadio = qt.QRadioButton("Semi-Automatic (use detected contacts)")
+        self.manualRadio = qt.QRadioButton("Manual (estimate contacts by distance)")
+        self.semiAutoRadio.setChecked(True)
+
+        modeLayout.addWidget(self.semiAutoRadio)
+        modeLayout.addWidget(self.manualRadio)
+        mainLayout.addWidget(modeGroupBox)
+
+        # === DETECTED POINTS SOURCE ===
+        sourceLayout = qt.QHBoxLayout()
+        sourceLayout.addWidget(qt.QLabel("Detected Points Source:"))
+
+        self.markupSelector = slicer.qMRMLNodeComboBox()
+        self.markupSelector.nodeTypes = ["vtkMRMLMarkupsFiducialNode"]
+        self.markupSelector.selectNodeUponCreation = False
+        self.markupSelector.addEnabled = False
+        self.markupSelector.removeEnabled = False
+        self.markupSelector.noneEnabled = True
+        self.markupSelector.showHidden = False
+        self.markupSelector.setMRMLScene(self.mrmlScene)
+        self.markupSelector.setToolTip("Select markup node with detected electrode contacts")
+        sourceLayout.addWidget(self.markupSelector)
+        mainLayout.addLayout(sourceLayout)
+
+        # Auto-detect Electrode_Predictions
+        self.autoDetectMarkup()
+
+        # === POINT SELECTION ===
+        pointsGroupBox = qt.QGroupBox("Endpoint Selection")
+        pointsLayout = qt.QGridLayout(pointsGroupBox)
+
+        # Entry point
+        pointsLayout.addWidget(qt.QLabel("Entry Point:"), 0, 0)
+        self.selectEntryButton = qt.QPushButton("Select Entry Point")
+        pointsLayout.addWidget(self.selectEntryButton, 0, 1)
+        self.entryPositionLabel = qt.QLabel("(---, ---, ---)")
+        pointsLayout.addWidget(self.entryPositionLabel, 0, 2)
+
+        self.snapEntryCheckbox = qt.QCheckBox("Snap to nearest detected")
+        pointsLayout.addWidget(self.snapEntryCheckbox, 1, 1, 1, 2)
+
+        # Deepest point
+        pointsLayout.addWidget(qt.QLabel("Deepest Point:"), 2, 0)
+        self.selectDeepestButton = qt.QPushButton("Select Deepest Point")
+        pointsLayout.addWidget(self.selectDeepestButton, 2, 1)
+        self.deepestPositionLabel = qt.QLabel("(---, ---, ---)")
+        pointsLayout.addWidget(self.deepestPositionLabel, 2, 2)
+
+        self.snapDeepestCheckbox = qt.QCheckBox("Snap to nearest detected")
+        pointsLayout.addWidget(self.snapDeepestCheckbox, 3, 1, 1, 2)
+
+        # Clear button
+        self.clearPointsButton = qt.QPushButton("Clear Points")
+        pointsLayout.addWidget(self.clearPointsButton, 4, 1)
+
+        mainLayout.addWidget(pointsGroupBox)
+
+        # === PARAMETERS ===
+        paramsGroupBox = qt.QGroupBox("Parameters")
+        paramsLayout = qt.QGridLayout(paramsGroupBox)
+
+        # Contact spacing
+        paramsLayout.addWidget(qt.QLabel("Contact Spacing (mm):"), 0, 0)
+        self.spacingSlider = ctk.ctkSliderWidget()
+        self.spacingSlider.decimals = 1
+        self.spacingSlider.minimum = 2.0
+        self.spacingSlider.maximum = 6.0
+        self.spacingSlider.value = 3.5
+        self.spacingSlider.singleStep = 0.1
+        paramsLayout.addWidget(self.spacingSlider, 0, 1)
+
+        # Fit method
+        paramsLayout.addWidget(qt.QLabel("Fit Method:"), 1, 0)
+        self.fitMethodCombo = qt.QComboBox()
+        self.fitMethodCombo.addItems(["Linear", "Spline"])
+        paramsLayout.addWidget(self.fitMethodCombo, 1, 1)
+
+        # Distance threshold (for semi-auto)
+        self.thresholdLabel = qt.QLabel("Distance Threshold (mm):")
+        paramsLayout.addWidget(self.thresholdLabel, 2, 0)
+        self.thresholdSlider = ctk.ctkSliderWidget()
+        self.thresholdSlider.decimals = 1
+        self.thresholdSlider.minimum = 1.0
+        self.thresholdSlider.maximum = 10.0
+        self.thresholdSlider.value = 3.5
+        self.thresholdSlider.singleStep = 0.5
+        paramsLayout.addWidget(self.thresholdSlider, 2, 1)
+
+        # Fill missing contacts option (for semi-auto mode)
+        self.fillMissingCheckbox = qt.QCheckBox("Fill missing contacts (estimate gaps)")
+        self.fillMissingCheckbox.setChecked(True)
+        self.fillMissingCheckbox.setToolTip("When enabled, estimates contact positions for any gaps where detection failed")
+        paramsLayout.addWidget(self.fillMissingCheckbox, 3, 0, 1, 2)
+
+        mainLayout.addWidget(paramsGroupBox)
+
+        # === PREVIEW ===
+        previewGroupBox = qt.QGroupBox("Preview")
+        previewLayout = qt.QGridLayout(previewGroupBox)
+
+        self.trajectoryLengthLabel = qt.QLabel("Trajectory Length: --- mm")
+        previewLayout.addWidget(self.trajectoryLengthLabel, 0, 0)
+
+        self.estimatedContactsLabel = qt.QLabel("Estimated Contacts: ---")
+        previewLayout.addWidget(self.estimatedContactsLabel, 1, 0)
+
+        self.detectedContactsLabel = qt.QLabel("Detected contacts found: ---")
+        previewLayout.addWidget(self.detectedContactsLabel, 2, 0)
+
+        mainLayout.addWidget(previewGroupBox)
+
+        # === OUTPUT ===
+        outputGroupBox = qt.QGroupBox("Output")
+        outputLayout = qt.QGridLayout(outputGroupBox)
+
+        outputLayout.addWidget(qt.QLabel("Electrode Name:"), 0, 0)
+        self.electrodeNameEdit = qt.QLineEdit()
+        self.electrodeNameEdit.setPlaceholderText("e.g., A, LAH, RMH")
+        self.electrodeNameEdit.setText("A")
+        outputLayout.addWidget(self.electrodeNameEdit, 0, 1)
+
+        self.saveAsMarkupCheckbox = qt.QCheckBox("Save as Markup Fiducial Node")
+        self.saveAsMarkupCheckbox.setChecked(True)
+        outputLayout.addWidget(self.saveAsMarkupCheckbox, 1, 0, 1, 2)
+
+        self.saveAsLineCheckbox = qt.QCheckBox("Save trajectory line (entry to deepest)")
+        self.saveAsLineCheckbox.setChecked(False)
+        outputLayout.addWidget(self.saveAsLineCheckbox, 2, 0, 1, 2)
+
+        mainLayout.addWidget(outputGroupBox)
+
+        # === CREATE BUTTON ===
+        self.createTrajectoryButton = qt.QPushButton("Create Trajectory")
+        self.createTrajectoryButton.setStyleSheet("font-weight: bold; padding: 10px;")
+        self.createTrajectoryButton.setEnabled(False)
+        mainLayout.addWidget(self.createTrajectoryButton)
+
+        # Status label
+        self.statusLabel = qt.QLabel("Select entry and deepest points to begin")
+        self.statusLabel.setStyleSheet("color: gray;")
+        mainLayout.addWidget(self.statusLabel)
+
+    def setupConnections(self):
+        """Connect UI signals to slots."""
+        self.semiAutoRadio.toggled.connect(self.onModeChanged)
+        self.selectEntryButton.clicked.connect(self.onSelectEntryPoint)
+        self.selectDeepestButton.clicked.connect(self.onSelectDeepestPoint)
+        self.clearPointsButton.clicked.connect(self.onClearPoints)
+        self.createTrajectoryButton.clicked.connect(self.onCreateTrajectory)
+        self.spacingSlider.valueChanged.connect(self.updatePreview)
+        self.thresholdSlider.valueChanged.connect(self.updatePreview)
+        self.markupSelector.currentNodeChanged.connect(self.onMarkupSelectionChanged)
+
+    def autoDetectMarkup(self):
+        """Try to auto-detect Electrode_Predictions markup node."""
+        try:
+            node = slicer.util.getNode("Electrode_Predictions")
+            if node:
+                self.markupSelector.setCurrentNode(node)
+                print("Auto-detected Electrode_Predictions markup node")
+        except:
+            pass
+
+    def onModeChanged(self, checked):
+        """Handle mode change between semi-auto and manual."""
+        isSemiAuto = self.semiAutoRadio.isChecked()
+        self.thresholdLabel.setVisible(isSemiAuto)
+        self.thresholdSlider.setVisible(isSemiAuto)
+        self.markupSelector.setEnabled(isSemiAuto)
+        self.fillMissingCheckbox.setVisible(isSemiAuto)
+        self.updatePreview()
+
+    def onMarkupSelectionChanged(self, node):
+        """Handle markup node selection change."""
+        self.detectedContactsNode = node
+        self.updatePreview()
+
+    def onSelectEntryPoint(self):
+        """Start entry point selection."""
+        self.isSelectingEntry = True
+        self.isSelectingDeepest = False
+        self.startPointPlacement("Entry")
+        self.selectEntryButton.setText("Placing... (click in 3D view)")
+        self.selectEntryButton.setStyleSheet("background-color: #ffc107;")
+
+    def onSelectDeepestPoint(self):
+        """Start deepest point selection."""
+        self.isSelectingEntry = False
+        self.isSelectingDeepest = True
+        self.startPointPlacement("Deepest")
+        self.selectDeepestButton.setText("Placing... (click in 3D view)")
+        self.selectDeepestButton.setStyleSheet("background-color: #ffc107;")
+
+    def startPointPlacement(self, pointType):
+        """Initialize point placement mode."""
+        # Remove any existing observer first
+        if self.placementObserver and self.tempPlacementNode:
+            self.tempPlacementNode.RemoveObserver(self.placementObserver)
+            self.placementObserver = None
+
+        # Remove any existing temp node safely
+        if self.tempPlacementNode:
+            try:
+                self.mrmlScene.RemoveNode(self.tempPlacementNode)
+            except:
+                pass
+            self.tempPlacementNode = None
+
+        # Create temporary placement node
+        self.tempPlacementNode = self.mrmlScene.AddNewNodeByClass(
+            "vtkMRMLMarkupsFiducialNode",
+            f"TempPlacement_{pointType}"
+        )
+
+        # Set display properties
+        displayNode = self.tempPlacementNode.GetDisplayNode()
+        if displayNode:
+            displayNode.SetGlyphScale(3.0)
+            if pointType == "Entry":
+                displayNode.SetSelectedColor(0.0, 1.0, 0.0)  # Green
+            else:
+                displayNode.SetSelectedColor(1.0, 0.0, 0.0)  # Red
+
+        # Enter placement mode
+        selectionNode = slicer.app.applicationLogic().GetSelectionNode()
+        selectionNode.SetActivePlaceNodeID(self.tempPlacementNode.GetID())
+
+        interactionNode = slicer.app.applicationLogic().GetInteractionNode()
+        interactionNode.SetCurrentInteractionMode(interactionNode.Place)
+
+        # Add observer for placement completion
+        self.placementObserver = self.tempPlacementNode.AddObserver(
+            slicer.vtkMRMLMarkupsNode.PointPositionDefinedEvent,
+            self.onPointPlaced
+        )
+
+    def onPointPlaced(self, caller, event):
+        """Handle point placement completion."""
+        if not self.tempPlacementNode or self.tempPlacementNode.GetNumberOfControlPoints() == 0:
+            return
+
+        # Get the placed point
+        point = [0.0, 0.0, 0.0]
+        self.tempPlacementNode.GetNthControlPointPosition(0, point)
+        point = np.array(point)
+
+        # Check if snapping is enabled
+        shouldSnap = False
+        if self.isSelectingEntry and self.snapEntryCheckbox.isChecked():
+            shouldSnap = True
+        elif self.isSelectingDeepest and self.snapDeepestCheckbox.isChecked():
+            shouldSnap = True
+
+        # Snap to nearest detected point if enabled
+        if shouldSnap and TRAJECTORY_RECONSTRUCTION_AVAILABLE:
+            detected_points = self.getDetectedPoints()
+            if detected_points is not None and len(detected_points) > 0:
+                snapped, was_snapped, distance = snap_to_nearest_point(point, detected_points, 5.0)
+                if was_snapped:
+                    point = snapped
+                    print(f"Snapped to detected point (distance: {distance:.1f}mm)")
+
+        # Store the point
+        if self.isSelectingEntry:
+            self.entryPoint = point
+            self.entryPositionLabel.setText(f"({point[0]:.1f}, {point[1]:.1f}, {point[2]:.1f})")
+            self.selectEntryButton.setText("Select Entry Point")
+            self.selectEntryButton.setStyleSheet("")
+        elif self.isSelectingDeepest:
+            self.deepestPoint = point
+            self.deepestPositionLabel.setText(f"({point[0]:.1f}, {point[1]:.1f}, {point[2]:.1f})")
+            self.selectDeepestButton.setText("Select Deepest Point")
+            self.selectDeepestButton.setStyleSheet("")
+
+        # Reset state
+        self.isSelectingEntry = False
+        self.isSelectingDeepest = False
+
+        # Exit placement mode FIRST
+        interactionNode = slicer.app.applicationLogic().GetInteractionNode()
+        interactionNode.SetCurrentInteractionMode(interactionNode.ViewTransform)
+
+        # CRITICAL FIX: Remove observer BEFORE cleanup to avoid crash
+        if self.placementObserver and self.tempPlacementNode:
+            self.tempPlacementNode.RemoveObserver(self.placementObserver)
+            self.placementObserver = None
+
+        # Defer node cleanup to avoid crash during callback
+        import qt
+        nodeToRemove = self.tempPlacementNode
+        self.tempPlacementNode = None
+        qt.QTimer.singleShot(0, lambda: self.cleanupPlacementNode(nodeToRemove))
+
+        # Update preview
+        self.updatePreview()
+
+    def cleanupPlacementNode(self, node):
+        """Safely remove placement node after callback completes."""
+        if node and self.mrmlScene:
+            try:
+                self.mrmlScene.RemoveNode(node)
+            except:
+                pass  # Node may already be removed
+
+    def onClearPoints(self):
+        """Clear selected entry and deepest points."""
+        self.entryPoint = None
+        self.deepestPoint = None
+        self.entryPositionLabel.setText("(---, ---, ---)")
+        self.deepestPositionLabel.setText("(---, ---, ---)")
+        self.updatePreview()
+
+        # Reset button states
+        self.selectEntryButton.setText("Select Entry Point")
+        self.selectEntryButton.setStyleSheet("")
+        self.selectDeepestButton.setText("Select Deepest Point")
+        self.selectDeepestButton.setStyleSheet("")
+
+        # Remove preview line
+        if self.previewLineNode:
+            self.mrmlScene.RemoveNode(self.previewLineNode)
+            self.previewLineNode = None
+
+    def getDetectedPoints(self):
+        """Get detected contact points from selected markup node."""
+        node = self.markupSelector.currentNode()
+        if not node:
+            return None
+
+        if TRAJECTORY_RECONSTRUCTION_AVAILABLE:
+            return get_all_points_from_markup_node(node)
+        return None
+
+    def updatePreview(self):
+        """Update trajectory preview information."""
+        if self.entryPoint is None or self.deepestPoint is None:
+            self.trajectoryLengthLabel.setText("Trajectory Length: --- mm")
+            self.estimatedContactsLabel.setText("Estimated Contacts: ---")
+            self.detectedContactsLabel.setText("Detected contacts found: ---")
+            self.createTrajectoryButton.setEnabled(False)
+            self.statusLabel.setText("Select entry and deepest points to begin")
+            self.statusLabel.setStyleSheet("color: gray;")
+            return
+
+        if not TRAJECTORY_RECONSTRUCTION_AVAILABLE:
+            self.statusLabel.setText("Error: Trajectory reconstruction module not available")
+            self.statusLabel.setStyleSheet("color: red;")
+            return
+
+        # Calculate trajectory length
+        n_contacts, length = estimate_contact_count(
+            self.entryPoint,
+            self.deepestPoint,
+            self.spacingSlider.value
+        )
+
+        self.trajectoryLengthLabel.setText(f"Trajectory Length: {length:.1f} mm")
+        self.estimatedContactsLabel.setText(f"Estimated Contacts: {n_contacts}")
+
+        # For semi-auto mode, count detected contacts near trajectory
+        if self.semiAutoRadio.isChecked():
+            detected_points = self.getDetectedPoints()
+            if detected_points is not None and len(detected_points) > 0:
+                nearby, _, _ = find_contacts_near_trajectory(
+                    detected_points,
+                    self.entryPoint,
+                    self.deepestPoint,
+                    self.thresholdSlider.value
+                )
+                self.detectedContactsLabel.setText(f"Detected contacts found: {len(nearby)}")
+            else:
+                self.detectedContactsLabel.setText("Detected contacts found: 0 (no markup selected)")
+        else:
+            self.detectedContactsLabel.setText("(Manual mode - contacts will be estimated)")
+
+        # Enable create button
+        self.createTrajectoryButton.setEnabled(True)
+        self.statusLabel.setText("Ready to create trajectory")
+        self.statusLabel.setStyleSheet("color: green;")
+
+    def onCreateTrajectory(self):
+        """Create the electrode trajectory."""
+        if not TRAJECTORY_RECONSTRUCTION_AVAILABLE:
+            slicer.util.errorDisplay("Trajectory reconstruction module not available")
+            return
+
+        if self.entryPoint is None or self.deepestPoint is None:
+            slicer.util.errorDisplay("Please select entry and deepest points first")
+            return
+
+        # Validate trajectory
+        is_valid, error_msg = validate_trajectory_points(self.entryPoint, self.deepestPoint)
+        if not is_valid:
+            slicer.util.errorDisplay(f"Invalid trajectory: {error_msg}")
+            return
+
+        electrode_name = self.electrodeNameEdit.text.strip() or "A"
+        fit_method = "spline" if self.fitMethodCombo.currentText == "Spline" else "linear"
+
+        try:
+            if self.semiAutoRadio.isChecked():
+                # Semi-automatic mode
+                detected_points = self.getDetectedPoints()
+                if detected_points is None or len(detected_points) == 0:
+                    slicer.util.warningDisplay("No detected points available. Falling back to manual mode.")
+                    self.createManualTrajectory(electrode_name, fit_method)
+                else:
+                    self.createSemiAutoTrajectory(detected_points, electrode_name, fit_method)
+            else:
+                # Manual mode
+                self.createManualTrajectory(electrode_name, fit_method)
+
+            self.statusLabel.setText(f"Trajectory '{electrode_name}' created successfully!")
+            self.statusLabel.setStyleSheet("color: green; font-weight: bold;")
+
+        except Exception as e:
+            slicer.util.errorDisplay(f"Error creating trajectory: {str(e)}")
+            logging.error(f"Trajectory creation error: {e}")
+
+    def createSemiAutoTrajectory(self, detected_points, electrode_name, fit_method):
+        """Create trajectory using semi-automatic mode."""
+        result = fit_trajectory_to_detected_contacts(
+            self.entryPoint,
+            self.deepestPoint,
+            detected_points,
+            distance_threshold=self.thresholdSlider.value,
+            fit_method=fit_method
+        )
+
+        if result['n_contacts_found'] == 0:
+            slicer.util.warningDisplay("No contacts found near trajectory. Using manual estimation.")
+            self.createManualTrajectory(electrode_name, fit_method)
+            return
+
+        sorted_coords = np.array(result['sorted_coords'])
+        is_interpolated = None
+
+        # Fill missing contacts if enabled
+        if self.fillMissingCheckbox.isChecked():
+            fill_result = fill_missing_contacts(
+                sorted_coords,
+                self.entryPoint,
+                self.deepestPoint,
+                contact_spacing=self.spacingSlider.value,
+                tolerance=1.5  # tolerance for matching detected to expected position
+            )
+            sorted_coords = np.array(fill_result['all_contacts'])
+            is_interpolated = fill_result['is_interpolated']
+
+            # Update status with fill info
+            num_detected = fill_result['num_detected']
+            num_interpolated = fill_result['num_interpolated']
+            print(f"Semi-auto trajectory: {num_detected} detected, {num_interpolated} estimated (filled)")
+        else:
+            print(f"Semi-auto trajectory created: {len(sorted_coords)} contacts found")
+
+        labels = label_contacts_seeg_convention(sorted_coords, electrode_name)
+
+        # Create output
+        self.createOutputNodes(sorted_coords, labels, electrode_name, is_interpolated)
+
+    def createManualTrajectory(self, electrode_name, fit_method):
+        """Create trajectory using manual estimation."""
+        n_contacts, length = estimate_contact_count(
+            self.entryPoint,
+            self.deepestPoint,
+            self.spacingSlider.value
+        )
+
+        # Generate contact points using linear interpolation
+        sorted_coords = linear_interpolate_contacts(
+            self.entryPoint,
+            self.deepestPoint,
+            n_contacts
+        )
+
+        labels = label_contacts_seeg_convention(sorted_coords, electrode_name)
+
+        # In manual mode, all contacts are "interpolated" (estimated)
+        # But we don't mark them since user expects estimation
+        self.createOutputNodes(sorted_coords, labels, electrode_name, is_interpolated=None)
+
+        print(f"Manual trajectory created: {n_contacts} contacts estimated")
+
+    def createOutputNodes(self, sorted_coords, labels, electrode_name, is_interpolated=None):
+        """Create Slicer nodes for the trajectory output.
+
+        Args:
+            sorted_coords: Array of contact coordinates
+            labels: List of contact labels
+            electrode_name: Name of the electrode
+            is_interpolated: Optional list of booleans indicating which contacts are interpolated
+        """
+        # Determine hemisphere color based on R coordinate (RAS convention)
+        # R > 0 = Right hemisphere = Blue
+        # R < 0 = Left hemisphere = Pink
+        def get_hemisphere_color(coord):
+            """Get color based on hemisphere (RAS: R>=0=Blue, R<0=Pink)"""
+            r_coord = coord[0] if hasattr(coord, '__getitem__') else 0
+            if r_coord >= 0:
+                return (0.3, 0.5, 1.0)  # Blue for right hemisphere
+            else:
+                return (1.0, 0.4, 0.7)  # Pink for left hemisphere
+
+        # Get hemisphere color from first contact
+        hemisphere_color = (0.5, 0.5, 0.5)  # Default gray
+        if len(sorted_coords) > 0:
+            first_coord = sorted_coords[0]
+            first_coord_list = first_coord.tolist() if hasattr(first_coord, 'tolist') else first_coord
+            hemisphere_color = get_hemisphere_color(first_coord_list)
+
+        # Create markup fiducial node if requested
+        if self.saveAsMarkupCheckbox.isChecked():
+            markupNode = self.mrmlScene.AddNewNodeByClass(
+                "vtkMRMLMarkupsFiducialNode",
+                f"Electrode_{electrode_name}"
+            )
+            markupNode.CreateDefaultDisplayNodes()
+
+            # Set display properties
+            displayNode = markupNode.GetDisplayNode()
+            if displayNode:
+                displayNode.SetGlyphScale(2.0)
+                displayNode.SetTextScale(3.0)
+                displayNode.SetPointLabelsVisibility(True)
+
+            # Add points with labels
+            for i, (coord, label) in enumerate(zip(sorted_coords, labels)):
+                coord_list = coord.tolist() if hasattr(coord, 'tolist') else coord
+                idx = markupNode.AddControlPoint(coord_list)
+                markupNode.SetNthControlPointLabel(idx, label)
+
+            # Set color based on hemisphere (R>=0=Blue, R<0=Pink)
+            if displayNode:
+                displayNode.SetColor(*hemisphere_color)
+                displayNode.SetSelectedColor(*hemisphere_color)
+
+            hemisphere_side = "Right (Blue)" if hemisphere_color[0] < 0.5 else "Left (Pink)"
+            print(f"Created markup node: Electrode_{electrode_name} ({len(sorted_coords)} contacts) - {hemisphere_side}")
+
+        # Create curve node connecting ALL contacts (if requested)
+        if self.saveAsLineCheckbox.isChecked():
+            curveNode = self.mrmlScene.AddNewNodeByClass(
+                "vtkMRMLMarkupsCurveNode",
+                f"Trajectory_{electrode_name}"
+            )
+            curveNode.CreateDefaultDisplayNodes()
+
+            # Set display properties - use same hemisphere color
+            displayNode = curveNode.GetDisplayNode()
+            if displayNode:
+                displayNode.SetColor(*hemisphere_color)
+                displayNode.SetSelectedColor(*hemisphere_color)
+                displayNode.SetLineThickness(0.5)
+                displayNode.SetPointLabelsVisibility(False)
+
+            # Add ALL contact points as control points (ordered deepest to entry)
+            for coord in sorted_coords:
+                coord_list = coord.tolist() if hasattr(coord, 'tolist') else coord
+                curveNode.AddControlPoint(coord_list)
+
+            print(f"Created trajectory curve: Trajectory_{electrode_name} ({len(sorted_coords)} points)")
+
+
 #
 # SEEG_maskingWidget - Pure Direct UI Access
 #
@@ -1180,6 +1832,7 @@ class SEEG_ElectrodeLocalizationWidget(ScriptedLoadableModuleWidget, VTKObservat
         self.logic = None
         self.outputVolumeNode = None  # Track the generated mask volume
         self.confidenceWidget = None # Confidence viewer widget
+        self.manualTrajectoryWidget = None  # Manual trajectory definition widget
         self.customTrajectoryOutputDir = None  # Track custom output directory for trajectory analysis
 
 
@@ -1225,6 +1878,9 @@ class SEEG_ElectrodeLocalizationWidget(ScriptedLoadableModuleWidget, VTKObservat
 
         # === CONFIDENCE VIEWER INITIALIZATION ===
         self.setupConfidenceViewer()
+
+        # === MANUAL TRAJECTORY DEFINITION INITIALIZATION ===
+        self.setupManualTrajectory()
 
         # Set default output path
         self.setDefaultOutputPath()
@@ -1561,11 +2217,33 @@ class SEEG_ElectrodeLocalizationWidget(ScriptedLoadableModuleWidget, VTKObservat
 
     def setupConfidenceViewer(self):
         try:
-            self.confidenceWidget = ConfidenceThresholdWidget(self.ui)  
-            print("✅ Confidence viewer initialized successfully")
+            self.confidenceWidget = ConfidenceThresholdWidget(self.ui)
+            print("Confidence viewer initialized successfully")
         except Exception as e:
-            print(f"⚠️ Confidence viewer setup failed: {e}")
+            print(f"Confidence viewer setup failed: {e}")
             self.confidenceWidget = None
+
+    def setupManualTrajectory(self):
+        """Setup the manual trajectory definition widget."""
+        try:
+            if TRAJECTORY_RECONSTRUCTION_AVAILABLE:
+                # Get the grid layout from the UI widget to add at specific row
+                # This ensures Manual Trajectory appears before Trajectory Analysis
+                gridLayout = self.ui.gridLayout if hasattr(self.ui, 'gridLayout') else self.layout
+
+                self.manualTrajectoryWidget = ManualTrajectoryWidget(
+                    gridLayout,
+                    slicer.mrmlScene,
+                    grid_row=5  # Place at row 5 (before Trajectory Analysis at row 6)
+                )
+                print("Manual trajectory widget initialized successfully")
+            else:
+                print("Manual trajectory widget not available (module not loaded)")
+                self.manualTrajectoryWidget = None
+        except Exception as e:
+            print(f"Manual trajectory setup failed: {e}")
+            logging.error(f"Manual trajectory setup error: {e}")
+            self.manualTrajectoryWidget = None
 
 
     def onApplyButton(self) -> None:
