@@ -1,0 +1,80 @@
+site_name: SlicerSEEG
+site_description: Automated SEEG Electrode Localization for Epilepsy Surgery Planning
+site_author: Rocío Ávalos Morillas
+site_url: https://rociavl.github.io/SlicerSEEG/
+repo_url: https://github.com/rociavl/SlicerSEEG
+repo_name: rociavl/SlicerSEEG
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: blue
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: blue
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - search.highlight
+    - search.suggest
+    - content.code.copy
+    - content.tabs.link
+  icon:
+    repo: fontawesome/brands/github
+  logo: assets/logo.png
+  favicon: assets/favicon.png
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Installation: getting-started/installation.md
+    - Quick Start: getting-started/quick-start.md
+  - Features:
+    - Overview: features/index.md
+    - Brain Extraction: features/brain-extraction.md
+    - Image Enhancement: features/enhancement.md
+    - Confidence Analysis: features/confidence.md
+    - Trajectory Reconstruction: features/trajectory.md
+  - Clinical Validation: validation/clinical-results.md
+  - About:
+    - Citation: about/citation.md
+    - Acknowledgments: about/acknowledgments.md
+
+plugins:
+  - search
+  - tags
+
+markdown_extensions:
+  - tables
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/rociavl
+    - icon: fontawesome/brands/linkedin
+      link: https://www.linkedin.com/in/rocío-ávalos-morillas-04a5372b1/
+  generator: false
+
+copyright: Copyright &copy; 2025 Rocío Ávalos Morillas - Universitat Politècnica de Catalunya
