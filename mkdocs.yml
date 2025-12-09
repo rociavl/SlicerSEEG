@@ -44,7 +44,6 @@ nav:
     - Image Enhancement: features/enhancement.md
     - Confidence Analysis: features/confidence.md
     - Trajectory Reconstruction: features/trajectory.md
-  - Clinical Validation: validation/clinical-results.md
   - About:
     - Citation: about/citation.md
     - Acknowledgments: about/acknowledgments.md
