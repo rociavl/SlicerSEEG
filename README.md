@@ -381,22 +381,12 @@ See [requirements.txt](requirements.txt) for complete list.
 
 ## Clinical Validation
 
-### Study Design
-
-| Parameter | Value |
-|-----------|-------|
-| **Institution** | Hospital del Mar, Barcelona, Spain |
-| **Cohort Size** | 16 patients |
-| **Reference Standard** | Expert manual annotations |
-| **Tolerance Threshold** | 2.0 mm (clinically accepted) |
 
 ### Results
 
 | Metric | Value | 95% CI |
 |--------|-------|--------|
-| **DSC (Overall)** | 0.569 ± 0.073 | 0.530 - 0.608 |
 | **Precision** | 97.5% ± 2.2% | 96.3% - 98.7% |
-| **Recall** | 68.6% ± 13.6% | 61.3% - 75.9% |
 | **F1 Score** | 0.797 ± 0.098 | 0.744 - 0.850 |
 | **Mean Distance** | 0.91 ± 0.18 mm | 0.81 - 1.01 mm |
 | **Within 2mm** | 97.5% ± 2.2% | — |
