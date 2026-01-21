@@ -22,7 +22,7 @@ def install_slicerseeg_dependencies():
     
     # Define all required packages with version constraints for compatibility
     dependencies = [
-        ('numpy<2.0', 'Core numerical computing (NumPy 2.0 not yet supported)'),
+        ('numpy>1.2', 'Numerical computations'),
         ('scipy<1.14', 'Scientific computing'),
         ('pandas<3.0', 'Data analysis'),
         ('scikit-learn<1.6', 'Machine learning'),
