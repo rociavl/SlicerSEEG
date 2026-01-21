@@ -337,7 +337,7 @@ def wavelet_denoise(slice_image, wavelet='db1', level=1):
 
 def remove_large_objects(segmented_image, size_threshold):
     labeled_image = measure.label(segmented_image, connectivity=1)  
-    mask = np.zeros_like(segmented_image, dtype=np.bool_)
+    mask = np.zeros_like(segmented_image, dtype=bool)
     for region in measure.regionprops(labeled_image):
         # If the region is small enough, keep it
         if region.area <= size_threshold:

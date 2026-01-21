@@ -447,7 +447,7 @@ def extract_trajectories_from_combined_mask(combined_volume, brain_volume=None):
             
             # Check if there's a trajectory path between them by finding connected components
             # Create a temporary mask combining bolt, entry and trajectory
-            temp_mask = np.zeros_like(combined_array, dtype=np.bool_)
+            temp_mask = np.zeros_like(combined_array, dtype=bool)
             temp_mask[bolt_labeled == bolt_id] = True
             temp_mask[entry_labeled == entry_id] = True
             temp_mask[trajectory_mask] = True
@@ -2919,7 +2919,7 @@ def visualize_adaptive_clustering(coords_array, iterations_data, expected_contac
     
     # Calculate which iterations to show (distribute evenly)
     if n_iterations > n_plots:
-        plot_indices = np.linspace(0, n_iterations-1, n_plots, dtype=np.int_)
+        plot_indices = np.linspace(0, n_iterations-1, n_plots, dtype=np.int64)
     else:
         plot_indices = np.arange(n_iterations)
     
@@ -4639,7 +4639,7 @@ def filter_coordinates_by_hemisphere(coords_array, hemisphere='left', verbose=Tr
     if hemisphere.lower() == 'both':
         if verbose:
             print(f"No hemisphere filtering applied. Keeping all {len(coords_array)} coordinates.")
-        return coords_array, np.ones(len(coords_array), dtype=np.bool_), np.arange(len(coords_array))
+        return coords_array, np.ones(len(coords_array), dtype=bool), np.arange(len(coords_array))
     
     # Create hemisphere mask based on RAS x-coordinate
     if hemisphere.lower() == 'left':
@@ -4693,7 +4693,7 @@ def filter_trajectories_by_hemisphere(trajectories, hemisphere='left', verbose=T
     if hemisphere.lower() == 'both':
         if verbose:
             print(f"No hemisphere filtering applied to trajectories. Keeping all {len(trajectories)}.")
-        return trajectories, np.ones(len(trajectories), dtype=np.bool_)
+        return trajectories, np.ones(len(trajectories), dtype=bool)
     
     hemisphere_mask = []
     
@@ -4950,7 +4950,7 @@ def create_hemisphere_comparison_visualization(coords_array, results, hemisphere
     
     # Get filtered coordinates and trajectories
     hemisphere_info = hemisphere_results.get('hemisphere_filtering', {})
-    filtered_coords = coords_array[hemisphere_info.get('coord_mask', np.ones(len(coords_array), dtype=np.bool_))]
+    filtered_coords = coords_array[hemisphere_info.get('coord_mask', np.ones(len(coords_array), dtype=bool))]
     
     # Plot filtered coordinates
     ax2.scatter(filtered_coords[:, 0], filtered_coords[:, 1], filtered_coords[:, 2], 

@@ -239,20 +239,20 @@ def compute_louvain_communities(electrode_coords, max_neighbor_distance=7):
         # Louvain community detection
         if len(G.edges) > 0:
             communities = nx.community.louvain_communities(G, weight='weight')
-            community_labels = np.zeros(len(electrode_coords), dtype=np.int_)
+            community_labels = np.zeros(len(electrode_coords), dtype=np.int64)
 
             for comm_id, community in enumerate(communities):
                 for node in community:
                     community_labels[node] = comm_id
         else:
-            community_labels = np.zeros(len(electrode_coords), dtype=np.int_)
+            community_labels = np.zeros(len(electrode_coords), dtype=np.int64)
 
         logging.info("✓ Louvain communities computed")
         return {'Louvain_Community': community_labels}
 
     except Exception as e:
         logging.warning(f"Community detection failed: {e}")
-        return {'Louvain_Community': np.zeros(len(electrode_coords), dtype=np.int_)}
+        return {'Louvain_Community': np.zeros(len(electrode_coords), dtype=np.int64)}
 
 
 def compute_position_features(electrode_coords):

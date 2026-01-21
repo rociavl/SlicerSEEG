@@ -652,7 +652,7 @@ def filter_coordinates_by_hemisphere(coords_array, hemisphere='left', verbose=Tr
     if hemisphere.lower() == 'both':
         if verbose:
             print(f"No hemisphere filtering applied. Keeping all {len(coords_array)} coordinates.")
-        return coords_array, np.ones(len(coords_array), dtype=np.bool_), np.arange(len(coords_array))
+        return coords_array, np.ones(len(coords_array), dtype=bool), np.arange(len(coords_array))
     
     if hemisphere.lower() == 'left':
         hemisphere_mask = coords_array[:, 0] < 0
