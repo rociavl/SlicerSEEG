@@ -177,7 +177,7 @@ class EnhancedMaskSelector:
             fused_mask: The fused mask array
         """
         # Initialize the weighted sum and weight accumulator
-        weighted_sum = np.zeros_like(next(iter(self.masks.values())), dtype=float)
+        weighted_sum = np.zeros_like(next(iter(self.masks.values())), dtype=np.float64)
         total_weight = 0
         
         # Add all selected masks with their weights
